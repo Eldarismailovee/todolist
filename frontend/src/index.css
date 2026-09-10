@@ -1,0 +1,45 @@
+@import 'tailwindcss';
+
+/*
+ * Tailwind v4 по умолчанию переключает тёмную тему по prefers-color-scheme.
+ * Ручной переключатель требует объявить вариант через класс .dark.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Плавное появление карточек Bento-сетки. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.bento-card {
+  animation: rise 0.25s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bento-card {
+    animation: none;
+  }
+}
