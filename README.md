@@ -60,10 +60,24 @@ Vite проксирует `/api` на бэкенд, поэтому SPA и API ж
 
 Redirect URI для обоих провайдеров: `{ORIGIN}/api/v1/auth/oauth/{provider}/callback`.
 
+### Среда и проверка конфигурации
+
+`ENVIRONMENT` принимает `development` (по умолчанию), `test` или `production`.
+При `production` приложение **не стартует**, если конфигурация оставляет
+локальные послабления: ключ по умолчанию или короче 32 символов,
+`COOKIE_SECURE=false`, `OTP_LOG_CODES=true`, `ENABLE_TESTING_ENDPOINTS=true`,
+пустой `SMTP_HOST` (вход завершается кодом из письма — без SMTP код уходит в
+лог). Проверка живёт в `Settings`, поэтому одинаково работает для API, воркера
+и CLI.
+
+Логирование обоих процессов поднимается из `app/logging_config.py`: httpx на
+INFO пишет URL каждого запроса, а у Telegram bot token лежит прямо в пути, так
+что клиентские логгеры приглушены до WARNING.
+
 ## Тесты
 
 ```bash
-timeout 900 uv run pytest -q         # 124 теста
+timeout 900 uv run pytest -q         # 133 теста
 uv run ruff check app tests
 ```
 
@@ -233,10 +247,10 @@ origin, без которого не работают cookie с `SameSite=Strict
   раздел выше. Это не обходится настройкой: нужен контейнерный хостинг.
 - **Служебный маршрут `/api/v1/testing/otp`** отдаёт последний код
   подтверждения. Он подключается только при `ENABLE_TESTING_ENDPOINTS=true`;
-  в production флаг обязан быть `false`.
+  при `ENVIRONMENT=production` этот флаг не даёт приложению стартовать.
 - **`SECRET_KEY` по умолчанию** подписывает OTP и ссылки на файлы известным
-  значением. Приложение пишет предупреждение в лог при старте, но не падает —
-  задайте свой ключ.
+  значением. Вне production это предупреждение в логе, в production — отказ
+  старта.
 
 ## Что не сделано
 

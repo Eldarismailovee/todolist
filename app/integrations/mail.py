@@ -6,6 +6,7 @@
 """
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 
@@ -14,6 +15,10 @@ import aiosmtplib
 from ..config import Settings
 
 logger = logging.getLogger(__name__)
+
+# Заглушка живёт столько же, сколько процесс: без предела письма (вместе с
+# кодами в теле) копились бы в памяти до перезапуска.
+OUTBOX_LIMIT = 200
 
 
 @dataclass(slots=True)
@@ -32,11 +37,13 @@ class Mailer:
 class LogMailer(Mailer):
     """Заглушка: письмо пишется в лог и накапливается для тестов."""
 
-    outbox: list[SentMessage] = field(default_factory=list)
+    outbox: deque[SentMessage] = field(default_factory=lambda: deque(maxlen=OUTBOX_LIMIT))
 
     async def send(self, to: str, subject: str, body: str) -> None:
         self.outbox.append(SentMessage(to=to, subject=subject, body=body))
-        logger.info("Письмо не отправлено (SMTP не настроен): %s — %s", to, subject)
+        # Ни темы, ни тела: письмо с кодом подтверждения не должно оседать в
+        # журнале даже в виде заголовка.
+        logger.info("Письмо не отправлено (SMTP не настроен), получатель: %s", to)
 
 
 @dataclass

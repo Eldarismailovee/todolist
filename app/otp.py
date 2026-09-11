@@ -28,7 +28,7 @@ def generate_code(settings: Settings) -> str:
 
 def hash_code(settings: Settings, email: str, code: str) -> str:
     message = f"{email.lower()}:{code}".encode()
-    return hmac.new(settings.secret_key.encode(), message, sha256).hexdigest()
+    return hmac.new(settings.secret_key.get_secret_value().encode(), message, sha256).hexdigest()
 
 
 async def issue_code(
@@ -110,9 +110,14 @@ async def consume_code(
 
 
 def format_message(code: str, purpose: Purpose, ttl_seconds: int) -> tuple[str, str]:
+    """Тема письма без кода: она попадает в заголовки, уведомления и логи почты.
+
+    Код остаётся только в теле — иначе OTP_LOG_CODES=false ничего не защищает,
+    потому что заглушка-мейлер и SMTP-серверы пишут тему целиком.
+    """
     action = "входа" if purpose == "login" else "регистрации"
     minutes = max(1, ttl_seconds // 60)
-    subject = f"Код подтверждения {action}: {code}"
+    subject = f"Код подтверждения {action} в Todo App"
     body = (
         f"Код подтверждения {action} в Todo App: {code}\n\n"
         f"Код действует {minutes} мин. и используется один раз.\n"

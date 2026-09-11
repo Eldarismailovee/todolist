@@ -10,16 +10,17 @@
 import asyncio
 import logging
 import signal
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import insert, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert
 
 from .config import get_settings
 from .db import SessionLocal, engine
 from .integrations.mail import Mailer, create_mailer
 from .integrations.telegram import TelegramSender, create_telegram_sender
+from .logging_config import configure_logging
 from .models import NotificationPrefs, Project, Task, TaskNotification, User
 
 logger = logging.getLogger(__name__)
@@ -39,40 +40,49 @@ def _message(task: Task, kind: str) -> tuple[str, str]:
     return subject, body
 
 
-async def _deliver(
-    db: AsyncSession,
-    mailer: Mailer,
-    telegram: TelegramSender,
-    task: Task,
-    user: User,
-    prefs: NotificationPrefs,
-    kind: str,
-) -> bool:
-    """Отправляет одно напоминание. False — если канал не сработал."""
-    subject, body = _message(task, kind)
+@dataclass(slots=True)
+class _Reminder:
+    """Всё нужное для отправки, снятое до фиксации заявки.
+
+    После commit ORM-объекты протухают, и обращение к `task.title` стоило бы
+    отдельного запроса на каждое напоминание.
+    """
+
+    task_id: int
+    kind: str
+    subject: str
+    body: str
+    email: str | None
+    chat_id: str | None
+
+    @property
+    def planned_channels(self) -> list[str]:
+        return [
+            name for name, target in (("email", self.email), ("telegram", self.chat_id)) if target
+        ]
+
+
+async def _deliver(mailer: Mailer, telegram: TelegramSender, reminder: _Reminder) -> list[str]:
+    """Отправляет одно напоминание. Возвращает каналы, которые сработали.
+
+    В базу ничего не пишет: отметка об отправке занята до вызова, иначе два
+    воркера отправили бы одно и то же напоминание одновременно.
+    """
     channels: list[str] = []
 
-    if prefs.email_enabled:
+    if reminder.email:
         try:
-            await mailer.send(user.email, subject, body)
+            await mailer.send(reminder.email, reminder.subject, reminder.body)
             channels.append("email")
         except Exception as error:  # noqa: BLE001 — канал не должен ронять воркер
-            logger.warning("Письмо о задаче %s не отправлено: %s", task.id, error)
+            logger.warning("Письмо о задаче %s не отправлено: %s", reminder.task_id, error)
 
-    if prefs.telegram_enabled and prefs.telegram_chat_id:
-        if await telegram.send(prefs.telegram_chat_id, f"<b>{subject}</b>\n{body}"):
+    if reminder.chat_id:
+        message = f"<b>{reminder.subject}</b>\n{reminder.body}"
+        if await telegram.send(reminder.chat_id, message):
             channels.append("telegram")
 
-    if not channels:
-        return False
-
-    db.add(TaskNotification(task_id=task.id, kind=kind, channels=",".join(channels)))
-    try:
-        await db.commit()
-    except IntegrityError:
-        # Другой воркер успел раньше: дубликат не создаётся.
-        await db.rollback()
-    return True
+    return channels
 
 
 async def run_once() -> int:
@@ -102,8 +112,7 @@ async def run_once() -> int:
             )
         ).all()
 
-        notifications_to_insert = []
-        tasks_mapping = {}
+        reminders: dict[tuple[int, str], _Reminder] = {}
 
         for task, user, prefs in rows:
             # Значения по умолчанию проставляются при INSERT, поэтому у
@@ -126,56 +135,65 @@ async def run_once() -> int:
             else:
                 continue
 
-            # Собираем каналы динамически на основе настроек пользователя
-            channels_list = []
-            if prefs.email_enabled:
-                channels_list.append("email")
-            if prefs.telegram_enabled:
-                channels_list.append("telegram")
-            channels_str = ",".join(channels_list)
-
-            # Добавляем в список для массовой вставки
-            notifications_to_insert.append(
-                {
-                    "task_id": task.id,
-                    "kind": kind,
-                    "channels": channels_str,
-                }
+            subject, body = _message(task, kind)
+            reminders[(task.id, kind)] = _Reminder(
+                task_id=task.id,
+                kind=kind,
+                subject=subject,
+                body=body,
+                email=user.email if prefs.email_enabled else None,
+                chat_id=prefs.telegram_chat_id if prefs.telegram_enabled else None,
             )
 
-            # Запоминаем контекст для последующей отправки
-            tasks_mapping[(task.id, kind)] = (task, user, prefs)
+        if not reminders:
+            return 0
 
-        if notifications_to_insert:
-            stmt = (
+        # ON CONFLICT — расширение PostgreSQL: метода нет у общего
+        # sqlalchemy.insert, поэтому конструктор берётся из диалекта.
+        # В channels пока намерение; фактические каналы известны после отправки.
+        claimed = (
+            await db.execute(
                 insert(TaskNotification)
-                .values(notifications_to_insert)
+                .values(
+                    [
+                        {
+                            "task_id": reminder.task_id,
+                            "kind": reminder.kind,
+                            "channels": ",".join(reminder.planned_channels),
+                        }
+                        for reminder in reminders.values()
+                    ]
+                )
                 .on_conflict_do_nothing(index_elements=["task_id", "kind"])
                 .returning(TaskNotification.task_id, TaskNotification.kind)
             )
+        ).all()
 
-            result = await db.execute(stmt)
-            inserted_rows = result.all()  # Получаем только те записи, которые реально создались
-
-            # Если внутри _deliver() будут делаться изменения в этой же сессии db,
-            # полезно зафиксировать стейт вставки, чтобы избежать конфликтов блокировок
-            await db.flush()
-
-            # Отправляем уведомления только для успешно вставленных записей
-            for task_id, kind in inserted_rows:
-                task, user, prefs = tasks_mapping[(task_id, kind)]
-
-                if await _deliver(db, mailer, telegram, task, user, prefs, kind):
-                    sent += 1
-
-        # Фиксируем транзакцию в конце прохода
+        # Заявка фиксируется до отправки: воркер, идущий параллельно, получит
+        # из RETURNING пустоту и не пошлёт то же самое второй раз.
         await db.commit()
+
+        for task_id, kind in claimed:
+            reminder = reminders[(task_id, kind)]
+            channels = await _deliver(mailer, telegram, reminder)
+            row = (TaskNotification.task_id == task_id, TaskNotification.kind == kind)
+            if channels:
+                # Фактические каналы: почта могла не уйти, а Telegram — уйти.
+                await db.execute(
+                    update(TaskNotification).where(*row).values(channels=",".join(channels))
+                )
+                sent += 1
+            else:
+                # Ни один канал не сработал: заявка снимается, напоминание
+                # уйдёт на следующем проходе.
+                await db.execute(delete(TaskNotification).where(*row))
+            await db.commit()
 
     return sent
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     settings = get_settings()
     stopping = asyncio.Event()
 

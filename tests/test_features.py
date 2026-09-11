@@ -590,3 +590,34 @@ async def test_worker_reports_overdue_separately(client):
     async with SessionLocal() as session:
         kinds = (await session.scalars(select(TaskNotification.kind))).all()
     assert list(kinds) == ["overdue"]
+
+
+async def test_worker_retries_after_failed_delivery(client, monkeypatch):
+    """Заявка снимается, если ни один канал не сработал.
+
+    Отметка ставится до отправки — иначе два воркера пошлют одно и то же.
+    Оставленная после сбоя, она молча проглотила бы напоминание навсегда.
+    """
+    from app import worker
+    from app.integrations.mail import Mailer
+
+    await register(client, "retry@example.com")
+    project_id = await create_project(client)
+    await create_task(
+        client,
+        project_id,
+        "Просрочена",
+        due_at=(datetime.now(UTC) - timedelta(hours=2)).isoformat(),
+    )
+
+    class BrokenMailer(Mailer):
+        async def send(self, to: str, subject: str, body: str) -> None:
+            raise ConnectionError("SMTP недоступен")
+
+    monkeypatch.setattr(worker, "create_mailer", lambda settings: BrokenMailer())
+    assert await worker.run_once() == 0
+    async with SessionLocal() as session:
+        assert (await session.scalars(select(TaskNotification.kind))).all() == []
+
+    monkeypatch.undo()
+    assert await worker.run_once() == 1

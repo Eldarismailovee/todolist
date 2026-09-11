@@ -15,6 +15,8 @@ TEST_DB_URL = "postgresql+psycopg://todo:todo@127.0.0.1:55433/todo_test"
 
 os.environ.update(
     {
+        # Среда явная: production-проверки конфигурации к тестам не применяются.
+        "ENVIRONMENT": "test",
         "DATABASE_URL": TEST_DB_URL,
         "REDIS_URL": "redis://127.0.0.1:56379/1",
         # Отдельный префикс: номер Redis DB не изолирует Pub/Sub.

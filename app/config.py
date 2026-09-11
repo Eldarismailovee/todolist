@@ -1,13 +1,26 @@
 """Конфигурация приложения. Значения читаются из окружения / .env."""
 
 from functools import lru_cache
+from typing import Literal
 
-from pydantic import Field, PostgresDsn, RedisDsn
+from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+Environment = Literal["development", "test", "production"]
+
+# Значение ключа из репозитория: подписанное им нельзя считать секретом.
+DEFAULT_SECRET_KEY = "dev-only-insecure-secret-change-me"
+MIN_SECRET_KEY_LENGTH = 32
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    # --- Среда -----------------------------------------------------------
+    # Удобные для разработки послабления (известный ключ, cookie без Secure,
+    # код в логе, служебные маршруты) в production не предупреждение, а отказ
+    # запускаться: см. _check_production_safety.
+    environment: Environment = "development"
 
     # --- Хранилища -------------------------------------------------------
     database_url: PostgresDsn = Field(default="postgresql+psycopg://todo:todo@127.0.0.1:55433/todo")
@@ -47,7 +60,9 @@ class Settings(BaseSettings):
 
     # Ключ для HMAC коротких значений (OTP). Шестизначный код слишком мал для
     # обычного хеша: без секрета его подобрали бы по утёкшей базе за секунды.
-    secret_key: str = "dev-only-insecure-secret-change-me"
+    # SecretStr прячет значение в repr настроек и трассировках; это не фильтр
+    # сторонних логов, поэтому сам ключ берётся только в месте вычисления HMAC.
+    secret_key: SecretStr = SecretStr(DEFAULT_SECRET_KEY)
 
     # --- Одноразовые коды (OTP) ------------------------------------------
     otp_length: int = 6
@@ -135,6 +150,49 @@ class Settings(BaseSettings):
 
     # secure=True для cookie; отключается только в локальной HTTP-разработке.
     cookie_secure: bool = True
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "production"
+
+    @property
+    def uses_default_secret_key(self) -> bool:
+        return self.secret_key.get_secret_value() == DEFAULT_SECRET_KEY
+
+    @model_validator(mode="after")
+    def _check_production_safety(self) -> "Settings":
+        """В production опасная конфигурация — отказ старта, а не предупреждение.
+
+        Предупреждение в логе не мешает выкатить сборку с ключом по умолчанию
+        или включёнными служебными маршрутами: его никто не читает до инцидента.
+        Процесс не должен подниматься вовсе.
+        """
+        if not self.is_production:
+            return self
+
+        problems: list[str] = []
+        secret = self.secret_key.get_secret_value()
+        if self.uses_default_secret_key:
+            problems.append("SECRET_KEY остался значением по умолчанию из репозитория")
+        elif len(secret) < MIN_SECRET_KEY_LENGTH:
+            problems.append(f"SECRET_KEY короче {MIN_SECRET_KEY_LENGTH} символов")
+        if not self.cookie_secure:
+            problems.append("COOKIE_SECURE=false: refresh cookie уйдёт по открытому HTTP")
+        if self.otp_log_codes:
+            problems.append("OTP_LOG_CODES=true: коды подтверждения попадут в журнал")
+        if self.enable_testing_endpoints:
+            problems.append("ENABLE_TESTING_ENDPOINTS=true: код подтверждения читается по HTTP")
+        if not self.smtp_host:
+            # Вход всегда завершается кодом из письма: без SMTP код уходит в
+            # лог-заглушку, то есть подтверждение перестаёт быть подтверждением.
+            problems.append("SMTP_HOST не задан: письма с кодами пишутся в лог вместо отправки")
+
+        if problems:
+            raise ValueError(
+                "Конфигурация непригодна для ENVIRONMENT=production:\n"
+                + "\n".join(f"  - {problem}" for problem in problems)
+            )
+        return self
 
     @property
     def key_prefix(self) -> str:

@@ -33,7 +33,7 @@ SIGNED_URL_TTL = 3600
 
 def _signature(settings: Settings, attachment_id: str, expires_at: int) -> str:
     message = f"{attachment_id}:{expires_at}".encode()
-    digest = hmac.new(settings.secret_key.encode(), message, sha256).digest()
+    digest = hmac.new(settings.secret_key.get_secret_value().encode(), message, sha256).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 

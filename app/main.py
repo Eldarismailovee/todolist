@@ -12,6 +12,7 @@ from .db import engine
 from .integrations.ai import create_assistant
 from .integrations.mail import create_mailer
 from .integrations.telegram import create_telegram_sender
+from .logging_config import configure_logging
 from .middleware import MaxBodySizeMiddleware
 from .redis_client import create_redis_clients
 from .routers import (
@@ -29,16 +30,18 @@ from .routers import (
     user,
 )
 
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 logger = logging.getLogger(__name__)
+# Опасные для production значения отвергаются здесь же: Settings не создаётся.
 settings = get_settings()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Клиенты внешних сервисов создаются при старте и закрываются при остановке."""
-    if settings.cookie_secure and settings.secret_key.startswith("dev-only"):
-        # Признак production-конфигурации с ключом по умолчанию.
+    logger.info("Среда: %s", settings.environment)
+    if settings.uses_default_secret_key:
+        # В production такая конфигурация не доходит до старта, см. config.py.
         logger.warning("SECRET_KEY не задан: OTP и ссылки на файлы подписаны известным ключом")
 
     app.state.redis = create_redis_clients(settings)
