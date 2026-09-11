@@ -6,10 +6,11 @@
 Login, refresh и logout защищены проверкой точного Origin и обязательного
 заголовка `X-CSRF-Guard: 1`. Маршруты OAuth вынесены в отдельный роутер: они
 открываются переходом по ссылке, где этих заголовков не бывает, и защищены
-параметром `state`.
+параметром `state` вместе с cookie, связывающей его с начавшим вход браузером.
 """
 
 import logging
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
@@ -19,7 +20,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit, auth_service, oauth, otp
 from ..config import Settings
-from ..cookies import clear_refresh_cookie, refresh_cookie_name, set_refresh_cookie
+from ..cookies import (
+    clear_oauth_state_cookie,
+    clear_refresh_cookie,
+    oauth_state_cookie_name,
+    refresh_cookie_name,
+    set_oauth_state_cookie,
+    set_refresh_cookie,
+)
 from ..dependencies import Db, MailerDep, RedisDep, SettingsDep
 from ..integrations.mail import Mailer
 from ..models import OAuthAccount, User
@@ -46,6 +54,8 @@ oauth_router = APIRouter(prefix="/auth/oauth", tags=["auth"])
 logger = logging.getLogger(__name__)
 NO_STORE = {"Cache-Control": "no-store"}
 PROVIDERS = ("google", "github")
+# Свой state — 32 символа; ограничение отсекает мусор до сравнения.
+MAX_STATE_LENGTH = 128
 
 
 def _token_response(
@@ -274,14 +284,19 @@ async def oauth_start(provider: str, redis: RedisDep, settings: SettingsDep):
     if provider not in PROVIDERS:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Неизвестный провайдер")
     try:
-        url = await oauth.start(redis, settings, provider)
+        url, state = await oauth.start(redis, settings, provider)
     except oauth.OAuthError as error:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(error)) from error
-    return RedirectResponse(url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    redirect = RedirectResponse(url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    # Одна cookie — один незавершённый вход на браузер: начатый заново переход
+    # вытесняет предыдущий, и его ссылка-возврат перестаёт работать.
+    set_oauth_state_cookie(redirect, settings, state)
+    return redirect
 
 
 @oauth_router.get("/{provider}/callback")
 async def oauth_callback(
+    request: Request,
     provider: str,
     db: Db,
     redis: RedisDep,
@@ -297,10 +312,26 @@ async def oauth_callback(
         # Причина остаётся в логе: в URL она подсказывала бы атакующему,
         # какой именно шаг не прошёл.
         logger.info("OAuth %s не удался: %s", provider, reason)
-        return RedirectResponse(f"{spa}/login?oauth_error=1", status_code=303)
+        redirect = RedirectResponse(f"{spa}/login?oauth_error=1", status_code=303)
+        clear_oauth_state_cookie(redirect, settings)
+        return redirect
 
     if provider not in PROVIDERS or error or not code:
         return failure(error or "нет кода")
+
+    # Случайность и одноразовость state закрывают подбор и повтор, но не
+    # перенос ещё не использованной ссылки-возврата в чужой браузер: там она
+    # молча завершила бы вход в аккаунт атакующего. Поэтому переход
+    # засчитывается только тому браузеру, который его начал.
+    bound_state = request.cookies.get(oauth_state_cookie_name(settings), "")
+    if (
+        not state
+        or len(state) > MAX_STATE_LENGTH
+        or not bound_state
+        # compare_digest на str падает на не-ASCII, а state приходит из URL.
+        or not secrets.compare_digest(bound_state.encode(), state.encode())
+    ):
+        return failure("state не связан с браузером")
 
     try:
         verifier = await oauth.consume_state(redis, settings, provider, state)
@@ -358,4 +389,5 @@ async def oauth_callback(
 
     redirect = RedirectResponse(f"{spa}/projects", status_code=303)
     set_refresh_cookie(redirect, settings, tokens.refresh_token)
+    clear_oauth_state_cookie(redirect, settings)
     return redirect

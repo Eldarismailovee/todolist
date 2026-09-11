@@ -77,7 +77,9 @@ class Settings(BaseSettings):
     github_token_url: str = "https://github.com/login/oauth/access_token"
     github_userinfo_url: str = "https://api.github.com/user"
     github_emails_url: str = "https://api.github.com/user/emails"
-    oauth_state_ttl_seconds: int = 600
+    # Время на один переход к провайдеру и обратно. Тот же срок живёт cookie,
+    # связывающая state с браузером, поэтому запас держится небольшим.
+    oauth_state_ttl_seconds: int = 300
 
     # --- Почта -----------------------------------------------------------
     # Без smtp_host письма пишутся в лог: локальная разработка не требует

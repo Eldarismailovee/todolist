@@ -135,12 +135,14 @@ async def run_once() -> int:
             channels_str = ",".join(channels_list)
 
             # Добавляем в список для массовой вставки
-            notifications_to_insert.append({
-                "task_id": task.id,
-                "kind": kind,
-                "channels": channels_str,
-            })
-            
+            notifications_to_insert.append(
+                {
+                    "task_id": task.id,
+                    "kind": kind,
+                    "channels": channels_str,
+                }
+            )
+
             # Запоминаем контекст для последующей отправки
             tasks_mapping[(task.id, kind)] = (task, user, prefs)
 
@@ -151,7 +153,7 @@ async def run_once() -> int:
                 .on_conflict_do_nothing(index_elements=["task_id", "kind"])
                 .returning(TaskNotification.task_id, TaskNotification.kind)
             )
-            
+
             result = await db.execute(stmt)
             inserted_rows = result.all()  # Получаем только те записи, которые реально создались
 
@@ -162,10 +164,10 @@ async def run_once() -> int:
             # Отправляем уведомления только для успешно вставленных записей
             for task_id, kind in inserted_rows:
                 task, user, prefs = tasks_mapping[(task_id, kind)]
-                
+
                 if await _deliver(db, mailer, telegram, task, user, prefs, kind):
                     sent += 1
-                    
+
         # Фиксируем транзакцию в конце прохода
         await db.commit()
 

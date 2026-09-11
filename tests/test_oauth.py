@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.cookies import refresh_cookie_name
+from app.cookies import oauth_state_cookie_name, refresh_cookie_name
 from app.db import SessionLocal
 from app.models import OAuthAccount, User
 
@@ -21,6 +21,7 @@ from .conftest import bearer, register
 
 settings = get_settings()
 COOKIE = refresh_cookie_name(settings)
+STATE_COOKIE = oauth_state_cookie_name(settings)
 FAKE_PORT = 8101
 
 # Профиль, который «вернёт» провайдер; тесты его подменяют.
@@ -191,6 +192,9 @@ async def test_state_cannot_be_replayed(oauth_client):
     first = await oauth_client.get(
         f"/api/v1/auth/oauth/github/callback?code=good-code&state={state}"
     )
+    # Cookie на успехе гасится, поэтому для повтора она подставляется заново:
+    # иначе проверялась бы привязка к браузеру, а не одноразовость state.
+    oauth_client.cookies.set(STATE_COOKIE, state)
     replay = await oauth_client.get(
         f"/api/v1/auth/oauth/github/callback?code=good-code&state={state}"
     )
@@ -198,6 +202,78 @@ async def test_state_cannot_be_replayed(oauth_client):
     assert first.status_code == 303 and first.headers["location"].endswith("/projects")
     # Повтор ссылки-возврата не создаёт вторую сессию.
     assert replay.headers["location"].endswith("/login?oauth_error=1")
+
+
+async def test_start_binds_state_to_the_browser(oauth_client):
+    """Cookie перехода несёт тот же state, что ушёл провайдеру."""
+    start = await oauth_client.get("/api/v1/auth/oauth/github/start")
+
+    state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+    assert oauth_client.cookies[STATE_COOKIE] == state
+    header = start.headers["set-cookie"]
+    assert "HttpOnly" in header and "SameSite=lax" in header
+
+
+async def test_callback_rejects_state_from_another_browser(oauth_client):
+    """Перенос незавершённой ссылки-возврата в чужой браузер не даёт сессии.
+
+    Иначе жертва, открыв ссылку, молча оказывалась бы в аккаунте атакующего.
+    """
+    STATE["id"] = "gh-transfer"
+    STATE["email"] = "gh-transfer@example.com"
+    state = await _authorize(oauth_client)
+
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import app
+
+    # Второй браузер: те же адреса и то же приложение, но своя банка cookie.
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+        follow_redirects=False,
+    ) as victim:
+        response = await victim.get(
+            f"/api/v1/auth/oauth/github/callback?code=good-code&state={state}"
+        )
+
+    assert response.headers["location"].endswith("/login?oauth_error=1")
+    assert COOKIE not in response.cookies
+    async with SessionLocal() as session:
+        assert (
+            await session.scalar(select(User).where(User.email == "gh-transfer@example.com"))
+            is None
+        )
+
+    # State не погашен: свой браузер доводит начатый вход до конца.
+    ours = await oauth_client.get(
+        f"/api/v1/auth/oauth/github/callback?code=good-code&state={state}"
+    )
+    assert ours.headers["location"].endswith("/projects")
+
+
+async def test_successful_callback_clears_the_transition_cookie(oauth_client):
+    STATE["id"] = "gh-cleanup"
+    STATE["email"] = "gh-cleanup@example.com"
+    state = await _authorize(oauth_client)
+
+    response = await oauth_client.get(
+        f"/api/v1/auth/oauth/github/callback?code=good-code&state={state}"
+    )
+
+    assert response.headers["location"].endswith("/projects")
+    assert not oauth_client.cookies.get(STATE_COOKIE)
+
+
+async def test_failed_callback_clears_the_transition_cookie(oauth_client):
+    state = await _authorize(oauth_client)
+
+    response = await oauth_client.get(
+        f"/api/v1/auth/oauth/github/callback?code=bad-code&state={state}"
+    )
+
+    assert response.headers["location"].endswith("/login?oauth_error=1")
+    assert not oauth_client.cookies.get(STATE_COOKIE)
 
 
 async def test_unknown_state_is_rejected(oauth_client):

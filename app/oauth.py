@@ -2,8 +2,9 @@
 
 Секрет клиента и обмен кода живут на сервере: браузер получает только адрес
 провайдера. `state` хранится в Redis и гасится при возврате — повторное
-использование ссылки-возврата не создаёт вторую сессию. Для Google
-дополнительно используется PKCE.
+использование ссылки-возврата не создаёт вторую сессию. Сам по себе он не
+говорит, чей это браузер, поэтому роутер дополнительно кладёт его в
+короткоживущую cookie. Для Google дополнительно используется PKCE.
 """
 
 import base64
@@ -85,7 +86,7 @@ async def start(redis: Redis, settings: Settings, provider: str) -> tuple[str, s
     if verifier:
         params["code_challenge"] = _challenge(verifier)
         params["code_challenge_method"] = "S256"
-    return f"{config['authorize_url']}?{urlencode(params)}"
+    return f"{config['authorize_url']}?{urlencode(params)}", state
 
 
 async def consume_state(redis: Redis, settings: Settings, provider: str, state: str) -> str | None:
