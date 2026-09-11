@@ -1,24 +1,14 @@
 import { useQueryClient } from '@tanstack/react-query';
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { fetchCurrentUser } from '../api/queries';
 import * as http from '../lib/http';
 import { useAuthStore } from '../stores/authStore';
-
-interface AuthContextValue {
-  signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string) => Promise<void>;
-  signOut: () => Promise<void>;
-  /** Сессия закончилась не по инициативе пользователя (401, auth_revoked). */
-  requireAuthentication: () => void;
-  expired: boolean;
-}
-
-const AuthContext = createContext<AuthContextValue | null>(null);
+import { AuthContext, type PendingOtp } from './context';
 
 const CHANNEL = 'todo-auth';
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const queryClient = useQueryClient();
   const setUser = useAuthStore((state) => state.setUser);
   const clear = useAuthStore((state) => state.clear);
@@ -49,7 +39,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [teardown]);
 
-  // Восстановление сессии при загрузке: cookie может пережить перезагрузку.
+  // Восстановление сессии при загрузке: cookie может пережить перезагрузку,
+  // и возврат из OAuth приходит именно так.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -65,27 +56,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [setUser, clear]);
 
-  const afterCredentials = useCallback(async () => {
-    const user = await fetchCurrentUser();
-    queryClient.clear();
-    setUser(user);
-    setExpired(false);
-  }, [queryClient, setUser]);
+  const startSignIn = useCallback(async (email: string, password: string) => {
+    const challenge = await http.login(email, password);
+    return { email, purpose: challenge.purpose, expiresIn: challenge.expires_in };
+  }, []);
 
-  const signIn = useCallback(
-    async (email: string, password: string) => {
-      await http.login(email, password);
-      await afterCredentials();
-    },
-    [afterCredentials],
-  );
+  const startSignUp = useCallback(async (email: string, password: string) => {
+    const challenge = await http.register(email, password);
+    return { email, purpose: challenge.purpose, expiresIn: challenge.expires_in };
+  }, []);
 
-  const signUp = useCallback(
-    async (email: string, password: string) => {
-      await http.register(email, password);
-      await afterCredentials();
+  const confirmOtp = useCallback(
+    async (pending: PendingOtp, code: string) => {
+      await http.verifyOtp(pending.email, code, pending.purpose);
+      const user = await fetchCurrentUser();
+      queryClient.clear();
+      setUser(user);
+      setExpired(false);
     },
-    [afterCredentials],
+    [queryClient, setUser],
   );
 
   const signOut = useCallback(async () => {
@@ -109,14 +98,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [teardown]);
 
   return (
-    <AuthContext.Provider value={{ signIn, signUp, signOut, requireAuthentication, expired }}>
+    <AuthContext.Provider
+      value={{
+        startSignIn,
+        startSignUp,
+        confirmOtp,
+        signOut,
+        requireAuthentication,
+        expired,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
 };
-
-export function useAuth(): AuthContextValue {
-  const context = useContext(AuthContext);
-  if (context === null) throw new Error('useAuth вне AuthProvider');
-  return context;
-}

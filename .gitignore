@@ -15,3 +15,8 @@ wheels/
 # Frontend
 node_modules/
 frontend/dist/
+frontend/playwright-report/
+frontend/test-results/
+frontend/coverage/
+var/
+openapi.json.tmp

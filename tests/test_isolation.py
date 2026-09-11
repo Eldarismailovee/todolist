@@ -11,7 +11,8 @@ from app.redis_client import user_channel
 from .conftest import bearer, create_project, fresh_access, register, set_metadata
 
 settings = get_settings()
-METADATA = [{"code": "title", "title": "Название", "type": "string", "is_required": True}]
+# Справочник описывает дополнительные поля; заголовок задачи — колонка.
+METADATA = [{"code": "note", "title": "Заметка", "type": "string", "is_required": False}]
 
 
 def new_client() -> AsyncClient:
@@ -36,7 +37,7 @@ async def test_foreign_project_id_gives_404_and_publishes_nothing(client, redis_
             await pubsub.subscribe(user_channel(settings, 1))
             response = await intruder.post(
                 "/api/v1/tasks",
-                json={"project_id": project_id, "attributes": {"title": "Чужая"}},
+                json={"project_id": project_id, "title": "Чужая"},
                 headers=bearer(await fresh_access(intruder)),
             )
             await asyncio.sleep(0.2)
@@ -80,7 +81,7 @@ async def test_foreign_task_cannot_be_modified(client):
     task_id = (
         await client.post(
             "/api/v1/tasks",
-            json={"project_id": project_id, "attributes": {"title": "Моя"}},
+            json={"project_id": project_id, "title": "Моя"},
             headers=bearer(await fresh_access(client)),
         )
     ).json()["id"]
@@ -89,7 +90,7 @@ async def test_foreign_task_cannot_be_modified(client):
         await register(other, "other2@example.com")
         patched = await other.patch(
             f"/api/v1/tasks/{task_id}",
-            json={"attributes": {"title": "Взломано"}},
+            json={"title": "Взломано"},
             headers=bearer(await fresh_access(other)),
         )
         deleted = await other.request(
@@ -102,7 +103,7 @@ async def test_foreign_task_cannot_be_modified(client):
     listing = await client.get(
         f"/api/v1/tasks?project_id={project_id}", headers=bearer(await fresh_access(client))
     )
-    assert listing.json()[0]["attributes"] == {"title": "Моя"}
+    assert listing.json()[0]["title"] == "Моя"
 
 
 async def test_attribute_meta_write_requires_admin(client):

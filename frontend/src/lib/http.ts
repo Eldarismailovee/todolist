@@ -52,16 +52,52 @@ export async function withAuthLock<T>(operation: () => Promise<T>): Promise<T> {
   return navigator.locks.request(AUTH_LOCK, operation);
 }
 
-export async function login(email: string, password: string): Promise<void> {
-  await withAuthLock(async () => {
-    await authHttp.post('/login', { email, password });
+export interface OtpChallenge {
+  otp_required: true;
+  purpose: 'login' | 'register';
+  expires_in: number;
+}
+
+/**
+ * Пароль сам по себе сессию не создаёт: сервер отвечает 202 и присылает код
+ * на почту. Сессия появляется только после `verifyOtp`.
+ */
+export async function login(email: string, password: string): Promise<OtpChallenge> {
+  return withAuthLock(async () => {
+    const { data } = await authHttp.post<OtpChallenge>('/login', { email, password });
+    return data;
   });
 }
 
-export async function register(email: string, password: string): Promise<void> {
-  await withAuthLock(async () => {
-    await authHttp.post('/register', { email, password });
+export async function register(email: string, password: string): Promise<OtpChallenge> {
+  return withAuthLock(async () => {
+    const { data } = await authHttp.post<OtpChallenge>('/register', { email, password });
+    return data;
   });
+}
+
+export async function verifyOtp(
+  email: string,
+  code: string,
+  purpose: 'login' | 'register',
+): Promise<void> {
+  await withAuthLock(async () => {
+    await authHttp.post('/otp/verify', { email, code, purpose });
+  });
+}
+
+/** Какие кнопки внешнего входа показывать: список задаёт сервер. */
+export async function oauthProviders(): Promise<string[]> {
+  const { data } = await authHttp.get<{ providers: string[] }>('/oauth/providers');
+  return data.providers;
+}
+
+/**
+ * Переход к провайдеру — обычная навигация: XHR не может пройти
+ * межсайтовый редирект и сохранить cookie.
+ */
+export function startOAuth(provider: string): void {
+  window.location.assign(`/api/v1/auth/oauth/${provider}/start`);
 }
 
 export async function logout(): Promise<void> {

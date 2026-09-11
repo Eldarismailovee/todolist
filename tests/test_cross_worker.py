@@ -3,10 +3,19 @@
 import asyncio
 import json
 
-from .conftest import bearer, create_project, fresh_access, live_client, register, set_metadata
+from .conftest import (
+    bearer,
+    create_project,
+    fresh_access,
+    live_client,
+    login,
+    register,
+    set_metadata,
+)
 from .test_sse import read_event
 
-METADATA = [{"code": "title", "title": "Название", "type": "string", "is_required": True}]
+# Справочник описывает дополнительные поля; заголовок задачи — колонка.
+METADATA = [{"code": "note", "title": "Заметка", "type": "string", "is_required": False}]
 
 
 async def test_one_access_token_is_burned_across_workers(workers):
@@ -39,12 +48,9 @@ async def test_event_published_by_one_worker_reaches_stream_on_another(workers):
         await set_metadata(METADATA)
         project_id = await create_project(streaming)
 
-        # Тот же пользователь работает со вторым воркером в отдельной сессии.
-        login = await writing.post(
-            "/api/v1/auth/login",
-            json={"email": "pubsub@example.com", "password": "correct-horse-battery"},
-        )
-        assert login.status_code == 200
+        # Тот же пользователь работает со вторым воркером в отдельной сессии;
+        # вход теперь двухшаговый, с подтверждением кодом.
+        await login(writing, "pubsub@example.com")
 
         token = await fresh_access(streaming, "sse")
         async with streaming.stream(
@@ -55,7 +61,7 @@ async def test_event_published_by_one_worker_reaches_stream_on_another(workers):
 
             created = await writing.post(
                 "/api/v1/tasks",
-                json={"project_id": project_id, "attributes": {"title": "С другого воркера"}},
+                json={"project_id": project_id, "title": "С другого воркера"},
                 headers=bearer(await fresh_access(writing)),
             )
             assert created.status_code == 201

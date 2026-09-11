@@ -10,7 +10,8 @@ from app.config import get_settings
 from .conftest import bearer, create_project, fresh_access, register, set_metadata
 
 settings = get_settings()
-METADATA = [{"code": "title", "title": "Название", "type": "string", "is_required": True}]
+# Справочник описывает дополнительные поля; заголовок задачи — колонка.
+METADATA = [{"code": "note", "title": "Заметка", "type": "string", "is_required": False}]
 
 
 async def _setup(client, email: str) -> int:
@@ -24,7 +25,8 @@ async def test_oversized_body_is_rejected_before_handler(client):
     project_id = await _setup(client, "big-body@example.com")
     payload = {
         "project_id": project_id,
-        "attributes": {"title": "x" * (settings.max_request_body_bytes + 1_000)},
+        "title": "Большая задача",
+        "description": "x" * (settings.max_request_body_bytes + 1_000),
     }
 
     response = await client.post(
@@ -41,7 +43,7 @@ async def test_attributes_over_64_kib_rejected(client):
 
     response = await client.post(
         "/api/v1/tasks",
-        json={"project_id": project_id, "attributes": attributes},
+        json={"project_id": project_id, "title": "Задача", "attributes": attributes},
         headers=bearer(await fresh_access(client)),
     )
 
@@ -59,7 +61,7 @@ async def test_publish_failure_does_not_mask_successful_write(client, monkeypatc
 
     response = await client.post(
         "/api/v1/tasks",
-        json={"project_id": project_id, "attributes": {"title": "Задача"}},
+        json={"project_id": project_id, "title": "Задача"},
         headers=bearer(await fresh_access(client)),
     )
 
@@ -72,7 +74,7 @@ async def test_publish_failure_does_not_mask_successful_write(client, monkeypatc
 
 async def test_idempotency_key_replays_the_same_result(client):
     project_id = await _setup(client, "idem@example.com")
-    body = {"project_id": project_id, "attributes": {"title": "Одна задача"}}
+    body = {"project_id": project_id, "title": "Одна задача"}
     headers = {"Idempotency-Key": "b8b1e7c0-0000-4000-8000-000000000001"}
 
     first = await client.post(
@@ -99,12 +101,12 @@ async def test_idempotency_key_with_different_body_conflicts(client):
 
     await client.post(
         "/api/v1/tasks",
-        json={"project_id": project_id, "attributes": {"title": "Первая"}},
+        json={"project_id": project_id, "title": "Первая"},
         headers={**headers, **bearer(await fresh_access(client))},
     )
     conflict = await client.post(
         "/api/v1/tasks",
-        json={"project_id": project_id, "attributes": {"title": "Другая"}},
+        json={"project_id": project_id, "title": "Другая"},
         headers={**headers, **bearer(await fresh_access(client))},
     )
 
@@ -118,12 +120,12 @@ async def test_rejected_mutation_releases_the_idempotency_key(client):
 
     invalid = await client.post(
         "/api/v1/tasks",
-        json={"project_id": project_id, "attributes": {"title": ""}},
+        json={"project_id": project_id, "title": ""},
         headers={**headers, **bearer(await fresh_access(client))},
     )
     retry = await client.post(
         "/api/v1/tasks",
-        json={"project_id": project_id, "attributes": {"title": "Исправлено"}},
+        json={"project_id": project_id, "title": "Исправлено"},
         headers={**headers, **bearer(await fresh_access(client))},
     )
 
@@ -144,7 +146,7 @@ async def test_invalid_idempotency_key_rejected(client, key):
 
     response = await client.post(
         "/api/v1/tasks",
-        json={"project_id": project_id, "attributes": {"title": "Задача"}},
+        json={"project_id": project_id, "title": "Задача"},
         headers={"Idempotency-Key": key, **bearer(await fresh_access(client))},
     )
 

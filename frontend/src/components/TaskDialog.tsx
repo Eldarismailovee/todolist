@@ -1,0 +1,242 @@
+import { useEffect, useId, useState } from 'react';
+
+import { useCategories, useCreateTag, useTags, useUpdateTask } from '../api/queries';
+import type { RichDocument, Task } from '../api/types';
+import { describeError } from '../lib/http';
+import { AiAssistant } from './AiAssistant';
+import { RichTextEditor } from './RichTextEditor';
+
+interface Props {
+  task: Task;
+  userId: number;
+  onClose: () => void;
+}
+
+const field =
+  'w-full rounded-xl border border-transparent bg-gray-100 px-3 py-2 text-sm transition-all outline-none focus:border-indigo-500 dark:bg-gray-800';
+
+/** `datetime-local` понимает только «YYYY-MM-DDTHH:mm» в местной зоне. */
+function toLocalInput(iso: string | null): string {
+  if (!iso) return '';
+  const date = new Date(iso);
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+export const TaskDialog = ({ task, userId, onClose }: Props) => {
+  const titleId = useId();
+  const descriptionId = useId();
+  const dueId = useId();
+  const categoryId = useId();
+
+  const [title, setTitle] = useState(task.title);
+  const [description, setDescription] = useState(task.description ?? '');
+  const [content, setContent] = useState<RichDocument | null>(
+    (task.content as RichDocument | null) ?? null,
+  );
+  const [dueAt, setDueAt] = useState(toLocalInput(task.due_at));
+  const [category, setCategory] = useState<number | null>(task.category_id);
+  const [tagIds, setTagIds] = useState<number[]>((task.tags ?? []).map((tag) => tag.id));
+  const [newTag, setNewTag] = useState('');
+
+  const tags = useTags(userId);
+  const categories = useCategories(userId);
+  const createTag = useCreateTag(userId);
+  const update = useUpdateTask(userId);
+
+  // Esc закрывает диалог: без клавиатуры модальное окно недоступно.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  async function save() {
+    await update.mutateAsync({
+      id: task.id,
+      patch: {
+        title: title.trim() || task.title,
+        description: description.trim() || null,
+        content,
+        // Локальное время приводим к ISO с зоной, иначе сервер получит смещение.
+        due_at: dueAt ? new Date(dueAt).toISOString() : null,
+        category_id: category,
+        tag_ids: tagIds,
+      },
+    });
+    onClose();
+  }
+
+  function toggleTag(id: number) {
+    setTagIds((current) =>
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
+    );
+  }
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Редактирование задачи"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-sm"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div className="my-8 w-full max-w-3xl space-y-4 rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl dark:border-gray-800 dark:bg-gray-950">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <label
+              htmlFor={titleId}
+              className="text-xs font-medium text-gray-500 dark:text-gray-400"
+            >
+              Заголовок
+            </label>
+            <input
+              id={titleId}
+              value={title}
+              maxLength={255}
+              onChange={(event) => setTitle(event.target.value)}
+              className={`${field} text-base font-semibold`}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Закрыть"
+            className="rounded-xl px-2 py-1 text-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-1.5">
+            <label htmlFor={dueId} className="text-xs font-medium text-gray-500 dark:text-gray-400">
+              Срок выполнения
+            </label>
+            <input
+              id={dueId}
+              type="datetime-local"
+              value={dueAt}
+              onChange={(event) => setDueAt(event.target.value)}
+              className={field}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label
+              htmlFor={categoryId}
+              className="text-xs font-medium text-gray-500 dark:text-gray-400"
+            >
+              Категория
+            </label>
+            <select
+              id={categoryId}
+              value={category ?? ''}
+              onChange={(event) =>
+                setCategory(event.target.value ? Number(event.target.value) : null)
+              }
+              className={field}
+            >
+              <option value="">Без категории</option>
+              {categories.data?.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Теги</span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {tags.data?.map((tag) => (
+              <button
+                key={tag.id}
+                type="button"
+                aria-pressed={tagIds.includes(tag.id)}
+                onClick={() => toggleTag(tag.id)}
+                className={[
+                  'rounded-lg border px-2 py-1 text-xs transition-all',
+                  tagIds.includes(tag.id)
+                    ? 'border-indigo-500 bg-indigo-600/10 text-indigo-700 dark:text-indigo-300'
+                    : 'border-gray-200 hover:bg-gray-100 dark:border-gray-800 dark:hover:bg-gray-800',
+                ].join(' ')}
+              >
+                #{tag.name}
+              </button>
+            ))}
+            <input
+              value={newTag}
+              placeholder="новый тег"
+              maxLength={40}
+              onChange={(event) => setNewTag(event.target.value)}
+              onKeyDown={async (event) => {
+                if (event.key !== 'Enter' || !newTag.trim()) return;
+                event.preventDefault();
+                const created = await createTag.mutateAsync(newTag.trim());
+                setTagIds((current) => [...current, created.id]);
+                setNewTag('');
+              }}
+              className="w-28 rounded-lg border border-dashed border-gray-300 bg-transparent px-2 py-1 text-xs outline-none focus:border-indigo-500 dark:border-gray-700"
+            />
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <label
+            htmlFor={descriptionId}
+            className="text-xs font-medium text-gray-500 dark:text-gray-400"
+          >
+            Краткое описание
+          </label>
+          <input
+            id={descriptionId}
+            value={description}
+            maxLength={10_000}
+            onChange={(event) => setDescription(event.target.value)}
+            className={field}
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Содержимое</span>
+          <RichTextEditor value={content} onChange={setContent} />
+        </div>
+
+        <AiAssistant
+          source={`${title}\n${description}`.trim()}
+          applyLabel="В описание"
+          onApply={(item) => setDescription((current) => (current ? `${current}; ${item}` : item))}
+        />
+
+        {update.isError && (
+          <p role="alert" className="text-xs text-red-500">
+            {describeError(update.error)}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl border border-gray-200 px-4 py-2 text-sm transition-all hover:bg-gray-100 dark:border-gray-800 dark:hover:bg-gray-800"
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={update.isPending}
+            className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition-all hover:bg-indigo-500 disabled:opacity-60"
+          >
+            {update.isPending ? 'Сохраняем…' : 'Сохранить'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};

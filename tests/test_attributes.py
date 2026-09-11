@@ -5,13 +5,13 @@ import pytest
 from .conftest import bearer, create_project, fresh_access, register, set_metadata
 
 METADATA = [
-    {"code": "title", "title": "Название", "type": "string", "is_required": True},
+    {"code": "label", "title": "Метка", "type": "string", "is_required": True},
     {"code": "done", "title": "Готово", "type": "boolean", "is_required": True},
     {"code": "due", "title": "Срок", "type": "date", "is_required": False},
     {"code": "note", "title": "Заметка", "type": "string", "is_required": False},
 ]
 
-VALID = {"title": "Купить хлеб", "done": False, "due": "2026-09-10"}
+VALID = {"label": "Купить хлеб", "done": False, "due": "2026-09-10"}
 
 
 async def _setup(client, email: str) -> int:
@@ -23,7 +23,9 @@ async def _setup(client, email: str) -> int:
 async def _create(client, project_id: int, attributes: dict):
     return await client.post(
         "/api/v1/tasks",
-        json={"project_id": project_id, "attributes": attributes},
+        # Заголовок задачи — обычная колонка; attributes остаются для
+        # дополнительных полей из справочника.
+        json={"project_id": project_id, "title": "Задача", "attributes": attributes},
         headers=bearer(await fresh_access(client)),
     )
 
@@ -41,7 +43,7 @@ async def test_required_boolean_false_is_accepted(client):
     """`false` — значение, а не отсутствие значения."""
     project_id = await _setup(client, "false@example.com")
 
-    response = await _create(client, project_id, {"title": "Задача", "done": False})
+    response = await _create(client, project_id, {"label": "Задача", "done": False})
 
     assert response.status_code == 201
     assert response.json()["attributes"]["done"] is False
@@ -51,27 +53,27 @@ async def test_optional_null_is_normalised_to_absent_key(client):
     project_id = await _setup(client, "null@example.com")
 
     response = await _create(
-        client, project_id, {"title": "Задача", "done": True, "due": None, "note": None}
+        client, project_id, {"label": "Задача", "done": True, "due": None, "note": None}
     )
 
     assert response.status_code == 201
-    assert response.json()["attributes"] == {"title": "Задача", "done": True}
+    assert response.json()["attributes"] == {"label": "Задача", "done": True}
 
 
 @pytest.mark.parametrize(
     ("attributes", "case"),
     [
         ({**VALID, "unknown_field": "x"}, "неизвестный ключ"),
-        ({"title": "Задача", "done": "false"}, "строка вместо boolean"),
-        ({"title": "Задача", "done": 0}, "число вместо boolean"),
-        ({"title": "Задача", "done": True, "due": "2026-02-30"}, "несуществующая дата"),
-        ({"title": "Задача", "done": True, "due": "2026-09-10T12:00:00Z"}, "timestamp"),
-        ({"title": "Задача", "done": True, "due": "10.09.2026"}, "неверный формат даты"),
-        ({"title": "Задача"}, "нет обязательного boolean"),
+        ({"label": "Задача", "done": "false"}, "строка вместо boolean"),
+        ({"label": "Задача", "done": 0}, "число вместо boolean"),
+        ({"label": "Задача", "done": True, "due": "2026-02-30"}, "несуществующая дата"),
+        ({"label": "Задача", "done": True, "due": "2026-09-10T12:00:00Z"}, "timestamp"),
+        ({"label": "Задача", "done": True, "due": "10.09.2026"}, "неверный формат даты"),
+        ({"label": "Задача"}, "нет обязательного boolean"),
         ({"done": True}, "нет обязательной строки"),
-        ({"title": "", "done": True}, "пустая обязательная строка"),
-        ({"title": "x" * 2_001, "done": True}, "строка длиннее 2000"),
-        ({"title": True, "done": True}, "boolean вместо строки"),
+        ({"label": "", "done": True}, "пустая обязательная строка"),
+        ({"label": "x" * 2_001, "done": True}, "строка длиннее 2000"),
+        ({"label": True, "done": True}, "boolean вместо строки"),
     ],
 )
 async def test_invalid_attributes_rejected(client, attributes, case):
@@ -111,7 +113,7 @@ async def test_failed_update_leaves_stored_attributes_untouched(client):
 
     rejected = await client.patch(
         f"/api/v1/tasks/{task_id}",
-        json={"attributes": {"title": "Новое", "done": "yes"}},
+        json={"attributes": {"label": "Новое", "done": "yes"}},
         headers=bearer(await fresh_access(client)),
     )
 
@@ -128,19 +130,19 @@ async def test_update_replaces_attribute_set(client):
 
     updated = await client.patch(
         f"/api/v1/tasks/{task_id}",
-        json={"attributes": {"title": "Обновлено", "done": True}},
+        json={"attributes": {"label": "Обновлено", "done": True}},
         headers=bearer(await fresh_access(client)),
     )
 
     assert updated.status_code == 200
-    assert updated.json()["attributes"] == {"title": "Обновлено", "done": True}
+    assert updated.json()["attributes"] == {"label": "Обновлено", "done": True}
 
 
 async def test_jsonb_containment_filter(client):
     """Фильтр по JSONB обслуживается GIN-индексом idx_tasks_attributes_gin."""
     project_id = await _setup(client, "filter@example.com")
-    await _create(client, project_id, {"title": "Первая", "done": True})
-    await _create(client, project_id, {"title": "Вторая", "done": False})
+    await _create(client, project_id, {"label": "Первая", "done": True})
+    await _create(client, project_id, {"label": "Вторая", "done": False})
 
     response = await client.get(
         f'/api/v1/tasks?project_id={project_id}&attributes_contains={{"done":true}}',
@@ -148,4 +150,4 @@ async def test_jsonb_containment_filter(client):
     )
 
     assert response.status_code == 200
-    assert [task["attributes"]["title"] for task in response.json()] == ["Первая"]
+    assert [task["attributes"]["label"] for task in response.json()] == ["Первая"]

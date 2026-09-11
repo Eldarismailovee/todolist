@@ -65,6 +65,30 @@ class RegisterRequest(BaseModel):
     password: Annotated[str, StringConstraints(strict=True, min_length=12, max_length=512)]
 
 
+class OtpChallengeResponse(BaseModel):
+    """Ответ на шаг «пароль принят»: сессии ещё нет, нужен код из письма."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    otp_required: Literal[True] = True
+    purpose: Literal["login", "register"]
+    expires_in: int
+
+
+class OtpVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+    code: Annotated[str, StringConstraints(strict=True, pattern=r"^[0-9]{4,10}$")]
+    purpose: Literal["login", "register"]
+
+
+class OAuthProvidersResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    providers: list[Literal["google", "github"]]
+
+
 class RefreshRequest(BaseModel):
     """`user_id` клиент не передаёт: он берётся из серверной записи сессии."""
 
@@ -87,6 +111,9 @@ class CurrentUserResponse(BaseModel):
     id: int
     email: EmailStr
     is_admin: bool
+    display_name: str | None = None
+    avatar_url: str | None = None
+    has_password: bool = True
     created_at: datetime
 
 
@@ -136,29 +163,91 @@ def _attributes_byte_limit(value: dict) -> dict:
     return value
 
 
+def _content_byte_limit(value: dict | None) -> dict | None:
+    if value is None:
+        return None
+    limit = get_settings().max_content_bytes
+    if len(json.dumps(value, ensure_ascii=False).encode("utf-8")) > limit:
+        raise ValueError(f"Содержимое превышает {limit // 1024} KiB")
+    return value
+
+
+TaskTitle = Annotated[
+    str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=255)
+]
+Attributes = Annotated[dict[AttributeCode, StrictStr | StrictBool | None], Field(max_length=64)]
+
+
 class TaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project_id: PositiveId
-    attributes: dict[AttributeCode, StrictStr | StrictBool | None] = Field(max_length=64)
+    title: TaskTitle
+    description: Annotated[str, StringConstraints(strict=True, max_length=10_000)] | None = None
+    # Документ Tiptap как есть; текст для поиска извлекает сервер.
+    content: dict[str, Any] | None = None
+    due_at: datetime | None = None
+    column_id: PositiveId | None = None
+    category_id: PositiveId | None = None
+    tag_ids: Annotated[list[PositiveId], Field(max_length=32)] = Field(default_factory=list)
+    attributes: Attributes = Field(default_factory=dict)
 
     @field_validator("attributes")
     @classmethod
-    def check_size(cls, value: dict) -> dict:
+    def check_attributes_size(cls, value: dict) -> dict:
         return _attributes_byte_limit(value)
+
+    @field_validator("content")
+    @classmethod
+    def check_content_size(cls, value: dict | None) -> dict | None:
+        return _content_byte_limit(value)
 
 
 class TaskUpdate(BaseModel):
-    """Полная замена набора атрибутов: JSONB присваивается новым словарём."""
+    """Частичное обновление: поле меняется, только если явно передано.
+
+    `attributes` заменяются целиком — JSONB присваивается новым словарём.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    attributes: dict[AttributeCode, StrictStr | StrictBool | None] = Field(max_length=64)
+    title: TaskTitle | None = None
+    description: Annotated[str, StringConstraints(strict=True, max_length=10_000)] | None = None
+    content: dict[str, Any] | None = None
+    due_at: datetime | None = None
+    column_id: PositiveId | None = None
+    category_id: PositiveId | None = None
+    tag_ids: Annotated[list[PositiveId], Field(max_length=32)] | None = None
+    attributes: Attributes | None = None
+    completed: StrictBool | None = None
 
     @field_validator("attributes")
     @classmethod
-    def check_size(cls, value: dict) -> dict:
-        return _attributes_byte_limit(value)
+    def check_attributes_size(cls, value: dict | None) -> dict | None:
+        return None if value is None else _attributes_byte_limit(value)
+
+    @field_validator("content")
+    @classmethod
+    def check_content_size(cls, value: dict | None) -> dict | None:
+        return _content_byte_limit(value)
+
+
+class TaskMove(BaseModel):
+    """Перетаскивание: целевая колонка и соседи в ней."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    column_id: PositiveId | None = None
+    before_id: PositiveId | None = None
+    after_id: PositiveId | None = None
+
+
+class TagResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    color: str
 
 
 class TaskResponse(BaseModel):
@@ -166,9 +255,146 @@ class TaskResponse(BaseModel):
 
     id: int
     project_id: int
+    column_id: int | None
+    category_id: int | None
+    title: str
+    description: str | None
+    content: dict[str, Any] | None
+    position: float
+    due_at: datetime | None
+    completed_at: datetime | None
     attributes: dict[str, str | bool]
+    tags: list[TagResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+
+class BoardColumnCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: PositiveId
+    title: Annotated[
+        str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=120)
+    ]
+    is_done_column: StrictBool = False
+
+
+class BoardColumnUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: (
+        Annotated[
+            str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=120)
+        ]
+        | None
+    ) = None
+    is_done_column: StrictBool | None = None
+    before_id: PositiveId | None = None
+    after_id: PositiveId | None = None
+
+
+class BoardColumnResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_id: int
+    title: str
+    position: float
+    is_done_column: bool
+
+
+class TagCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[
+        str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=40)
+    ]
+    color: Annotated[str, StringConstraints(strict=True, pattern=r"^#[0-9a-fA-F]{6}$")] = "#64748b"
+
+
+class CategoryCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[
+        str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=60)
+    ]
+    color: Annotated[str, StringConstraints(strict=True, pattern=r"^#[0-9a-fA-F]{6}$")] = "#6366f1"
+
+
+class CategoryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    color: str
+
+
+class AttachmentResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    url: str
+    filename: str
+    content_type: str
+    size_bytes: int
+
+
+class NotificationPrefsSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    email_enabled: StrictBool = True
+    telegram_enabled: StrictBool = False
+    telegram_chat_id: (
+        Annotated[str, StringConstraints(strict=True, pattern=r"^-?[0-9]{1,32}$")] | None
+    ) = None
+    lead_time_minutes: Annotated[int, Field(strict=True, ge=5, le=10_080)] = 60
+
+
+class AssistRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["ideas", "summarize", "decompose", "rewrite"]
+    text: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=20_000)]
+
+
+class AssistResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    items: list[str]
+    # "stub" означает, что ключ не настроен и ответ сгенерирован без модели.
+    provider: Literal["anthropic", "stub"]
+    model: str | None = None
+
+
+class AnalyticsPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date: str
+    created: int
+    completed: int
+
+
+class AnalyticsCategorySlice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    color: str
+    total: int
+    completed: int
+
+
+class AnalyticsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    range_days: int
+    total: int
+    completed: int
+    overdue: int
+    due_soon: int
+    completion_rate: float
+    daily: list[AnalyticsPoint]
+    by_category: list[AnalyticsCategorySlice]
 
 
 # --- Метаданные атрибутов ------------------------------------------------

@@ -3,7 +3,11 @@ import { Navigate, useLocation } from 'react-router-dom';
 
 import { useAuthStore } from '../stores/authStore';
 
-export const RequireAuth: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+interface RequireAuthProps {
+  children: React.ReactNode;
+}
+
+export const RequireAuth = ({ children }: RequireAuthProps) => {
   const status = useAuthStore((state) => state.status);
   const location = useLocation();
 

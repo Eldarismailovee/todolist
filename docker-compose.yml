@@ -27,5 +27,17 @@ services:
       timeout: 3s
       retries: 20
 
+  mailpit:
+    # Локальная почта: письма с кодами видно в веб-интерфейсе, наружу ничего
+    # не уходит. Без SMTP_HOST приложение просто пишет письма в лог.
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:1026:1025"   # SMTP
+      - "127.0.0.1:8026:8025"   # веб-интерфейс
+    environment:
+      MP_MAX_MESSAGES: 500
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+
 volumes:
   todo_pgdata:

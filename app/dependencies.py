@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .access_tokens import Principal, Purpose, consume_access_token
 from .config import Settings, get_settings
 from .db import get_async_db
+from .integrations.ai import Assistant
+from .integrations.mail import Mailer
+from .integrations.telegram import TelegramSender
 from .models import User
 from .sessions import assert_session_active, session_is_active
 
@@ -19,6 +22,18 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 def get_redis(request: Request) -> Redis:
     return request.app.state.redis.commands
+
+
+def get_mailer(request: Request) -> Mailer:
+    return request.app.state.mailer
+
+
+def get_telegram(request: Request) -> TelegramSender:
+    return request.app.state.telegram
+
+
+def get_assistant(request: Request) -> Assistant:
+    return request.app.state.assistant
 
 
 def get_pubsub_redis(request: Request) -> Redis:
@@ -70,6 +85,25 @@ async def get_sse_principal(
     return principal
 
 
+async def get_optional_api_principal(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    redis: Annotated[Redis, Depends(get_redis)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    db: Annotated[AsyncSession, Depends(get_async_db)],
+) -> Principal | None:
+    """Как get_api_principal, но отсутствие заголовка — не ошибка.
+
+    Нужен там, где доступ может давать подписанная ссылка: у тега <img> нет
+    возможности отправить заголовок Authorization.
+    """
+    if credentials is None or not credentials.credentials:
+        return None
+    principal = await consume_access_token(redis, settings, credentials.credentials, "api")
+    if not await assert_session_active(db, principal):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Сессия недействительна")
+    return principal
+
+
 async def get_current_user(
     principal: Annotated[Principal, Depends(get_api_principal)],
     db: Annotated[AsyncSession, Depends(get_async_db)],
@@ -87,8 +121,12 @@ async def require_admin(user: Annotated[User, Depends(get_current_user)]) -> Use
 
 
 CurrentPrincipal = Annotated[Principal, Depends(get_api_principal)]
+OptionalPrincipal = Annotated[Principal | None, Depends(get_optional_api_principal)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 AdminUser = Annotated[User, Depends(require_admin)]
 Db = Annotated[AsyncSession, Depends(get_async_db)]
 RedisDep = Annotated[Redis, Depends(get_redis)]
+MailerDep = Annotated[Mailer, Depends(get_mailer)]
+TelegramDep = Annotated[TelegramSender, Depends(get_telegram)]
+AssistantDep = Annotated[Assistant, Depends(get_assistant)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]

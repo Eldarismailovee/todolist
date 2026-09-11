@@ -9,18 +9,42 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .db import engine
+from .integrations.ai import create_assistant
+from .integrations.mail import create_mailer
+from .integrations.telegram import create_telegram_sender
 from .middleware import MaxBodySizeMiddleware
 from .redis_client import create_redis_clients
-from .routers import auth, meta, projects, sse, tasks, user
+from .routers import (
+    ai,
+    analytics,
+    auth,
+    board,
+    files,
+    meta,
+    notifications,
+    projects,
+    sse,
+    tasks,
+    taxonomy,
+    user,
+)
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Redis создаётся при старте и закрывается при остановке приложения."""
+    """Клиенты внешних сервисов создаются при старте и закрываются при остановке."""
+    if settings.cookie_secure and settings.secret_key.startswith("dev-only"):
+        # Признак production-конфигурации с ключом по умолчанию.
+        logger.warning("SECRET_KEY не задан: OTP и ссылки на файлы подписаны известным ключом")
+
     app.state.redis = create_redis_clients(settings)
+    app.state.mailer = create_mailer(settings)
+    app.state.telegram = create_telegram_sender(settings)
+    app.state.assistant = create_assistant(settings)
     try:
         yield
     finally:
@@ -30,7 +54,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="Todo App",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
@@ -42,18 +66,34 @@ app.add_middleware(
     # При credentialed CORS "*" запрещён: разрешён ровно один origin.
     allow_origins=[settings.allowed_origin],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-CSRF-Guard", "Idempotency-Key"],
     max_age=600,
 )
 
 api = APIRouter(prefix="/api/v1")
 api.include_router(auth.router)
+api.include_router(auth.oauth_router)
 api.include_router(projects.router)
+api.include_router(board.router)
 api.include_router(tasks.router)
+api.include_router(taxonomy.router)
+api.include_router(files.router)
+api.include_router(ai.router)
+api.include_router(analytics.router)
+api.include_router(notifications.router)
 api.include_router(meta.router)
 api.include_router(user.router)
 api.include_router(sse.router)
+
+if settings.enable_testing_endpoints:
+    # Маршрут отдаёт последний код подтверждения и существует только при
+    # явно включённом флаге — в production он не регистрируется вовсе.
+    from .routers import testing
+
+    logger.warning("Включены служебные e2e-маршруты: не используйте это в production")
+    api.include_router(testing.router)
+
 app.include_router(api)
 
 

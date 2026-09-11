@@ -45,11 +45,89 @@ class Settings(BaseSettings):
     refresh_rate_limit: int = 240
     refresh_rate_window_seconds: int = 60
 
+    # Ключ для HMAC коротких значений (OTP). Шестизначный код слишком мал для
+    # обычного хеша: без секрета его подобрали бы по утёкшей базе за секунды.
+    secret_key: str = "dev-only-insecure-secret-change-me"
+
+    # --- Одноразовые коды (OTP) ------------------------------------------
+    otp_length: int = 6
+    otp_ttl_seconds: int = 600
+    otp_max_attempts: int = 5
+    # Запросов кода на один адрес за окно: иначе почтой можно завалить чужой ящик.
+    otp_request_limit: int = 5
+    otp_request_window_seconds: int = 900
+    # Вывести код в лог удобно локально и недопустимо в production.
+    otp_log_codes: bool = False
+    # Подключает служебные маршруты для e2e (чтение последнего кода).
+    # По умолчанию выключено: в production этих путей просто нет.
+    enable_testing_endpoints: bool = False
+
+    # --- OAuth -----------------------------------------------------------
+    # URL провайдеров вынесены в настройки, чтобы тесты могли подставить
+    # локальный фейковый провайдер, не подменяя код.
+    oauth_redirect_base: str = Field(default="http://localhost:5173")
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_authorize_url: str = "https://accounts.google.com/o/oauth2/v2/auth"
+    google_token_url: str = "https://oauth2.googleapis.com/token"
+    google_userinfo_url: str = "https://openidconnect.googleapis.com/v1/userinfo"
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    github_authorize_url: str = "https://github.com/login/oauth/authorize"
+    github_token_url: str = "https://github.com/login/oauth/access_token"
+    github_userinfo_url: str = "https://api.github.com/user"
+    github_emails_url: str = "https://api.github.com/user/emails"
+    oauth_state_ttl_seconds: int = 600
+
+    # --- Почта -----------------------------------------------------------
+    # Без smtp_host письма пишутся в лог: локальная разработка не требует
+    # настоящего почтового сервера.
+    smtp_host: str = ""
+    smtp_port: int = 1026
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = False
+    smtp_start_tls: bool = False
+    mail_from: str = "Todo App <no-reply@todo.local>"
+    mail_timeout_seconds: float = 10.0
+
+    # --- Telegram --------------------------------------------------------
+    telegram_bot_token: str = ""
+    telegram_api_base: str = "https://api.telegram.org"
+
+    # --- AI-ассистент ----------------------------------------------------
+    anthropic_api_key: str = ""
+    ai_model: str = "claude-opus-5"
+    # Занижать max_tokens нельзя: ответ обрежется на середине мысли.
+    ai_max_tokens: int = 4_000
+    # Задачи ассистента простые (переписать, сжать, разбить на шаги), поэтому
+    # низкое усилие; мышление остаётся адаптивным.
+    ai_effort: str = "low"
+    ai_input_limit: int = 20_000
+    ai_rate_limit: int = 30
+    ai_rate_window_seconds: int = 3600
+
+    # --- Загрузка файлов -------------------------------------------------
+    upload_dir: str = "var/uploads"
+    max_upload_bytes: int = 5 * 1024 * 1024
+    allowed_upload_types: tuple[str, ...] = (
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/svg+xml",
+    )
+
+    # --- Уведомления о дедлайнах -----------------------------------------
+    notification_poll_seconds: int = 60
+    notification_batch_size: int = 200
+
     # --- Лимиты данных ---------------------------------------------------
     max_attributes: int = 64
     max_attribute_string_length: int = 2_000
     max_attributes_bytes: int = 65_536
     max_request_body_bytes: int = 128 * 1024
+    max_content_bytes: int = 512 * 1024
     export_max_tasks: int = 5_000
     idempotency_ttl_seconds: int = 24 * 3600
 
@@ -59,6 +137,32 @@ class Settings(BaseSettings):
     @property
     def key_prefix(self) -> str:
         return f"{self.redis_namespace}:"
+
+    def oauth_provider(self, provider: str) -> dict[str, str]:
+        """Настройки провайдера одним словарём; пустой client_id = выключен."""
+        if provider == "google":
+            return {
+                "client_id": self.google_client_id,
+                "client_secret": self.google_client_secret,
+                "authorize_url": self.google_authorize_url,
+                "token_url": self.google_token_url,
+                "userinfo_url": self.google_userinfo_url,
+                "scope": "openid email profile",
+            }
+        if provider == "github":
+            return {
+                "client_id": self.github_client_id,
+                "client_secret": self.github_client_secret,
+                "authorize_url": self.github_authorize_url,
+                "token_url": self.github_token_url,
+                "userinfo_url": self.github_userinfo_url,
+                "scope": "read:user user:email",
+            }
+        raise ValueError(f"Неизвестный провайдер: {provider}")
+
+    @property
+    def enabled_oauth_providers(self) -> list[str]:
+        return [name for name in ("google", "github") if self.oauth_provider(name)["client_id"]]
 
 
 @lru_cache(maxsize=1)

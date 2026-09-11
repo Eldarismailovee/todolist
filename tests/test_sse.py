@@ -18,7 +18,8 @@ from .conftest import (
 )
 
 settings = get_settings()
-METADATA = [{"code": "title", "title": "Название", "type": "string", "is_required": True}]
+# Справочник описывает дополнительные поля; заголовок задачи — колонка.
+METADATA = [{"code": "note", "title": "Заметка", "type": "string", "is_required": False}]
 
 
 async def read_event(lines, seconds: float = 10.0) -> tuple[str, str]:
@@ -65,7 +66,7 @@ async def test_stream_delivers_owner_events_only(worker_client, workers, redis_c
 
                 created = await worker_client.post(
                     "/api/v1/tasks",
-                    json={"project_id": project_id, "attributes": {"title": "Новая"}},
+                    json={"project_id": project_id, "title": "Новая"},
                     headers=bearer(await fresh_access(worker_client)),
                 )
                 assert created.status_code == 201
@@ -91,7 +92,7 @@ async def test_update_and_delete_events(worker_client):
     task_id = (
         await worker_client.post(
             "/api/v1/tasks",
-            json={"project_id": project_id, "attributes": {"title": "Задача"}},
+            json={"project_id": project_id, "title": "Задача"},
             headers=bearer(await fresh_access(worker_client)),
         )
     ).json()["id"]
@@ -105,7 +106,7 @@ async def test_update_and_delete_events(worker_client):
 
         await worker_client.patch(
             f"/api/v1/tasks/{task_id}",
-            json={"attributes": {"title": "Изменено"}},
+            json={"title": "Изменено"},
             headers=bearer(await fresh_access(worker_client)),
         )
         assert (await read_event(lines))[0] == "task_updated"

@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { NavLink, Outlet, useNavigate, useParams } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { useCreateProject, useProjects } from '../api/queries';
-import { useAuth } from '../auth/AuthProvider';
+import { useAuth } from '../auth/context';
 import { useTaskSSE } from '../hooks/useTaskSSE';
 import { describeError } from '../lib/http';
 import { useAuthStore } from '../stores/authStore';
 import { ThemeToggle } from './ThemeToggle';
 
-export const ProjectsLayout: React.FC = () => {
+export const ProjectsLayout = () => {
   const user = useAuthStore((state) => state.user);
   const { signOut, requireAuthentication, expired } = useAuth();
   const navigate = useNavigate();
@@ -17,22 +17,23 @@ export const ProjectsLayout: React.FC = () => {
 
   const userId = user?.id ?? null;
 
-  // Один поток на весь авторизованный layout: канал уже относится ко всем
-  // данным владельца, поэтому смена проекта подписку не меняет.
   useTaskSSE(userId, requireAuthentication);
 
   const projects = useProjects(userId ?? 0);
   const createProject = useCreateProject(userId ?? 0);
 
-  // Первый проект открывается сам: пустой экран без выбора бесполезен.
   const firstProjectId = projects.data?.[0]?.id;
+  const location = useLocation();
+  // Автопереход только с «голого» /projects: страницы аналитики и настроек
+  // тоже вложены в этот layout и не должны перебиваться проектом.
+  const onProjectsRoot = location.pathname.replace(/\/+$/, '') === '/projects';
   useEffect(() => {
-    if (!projectId && firstProjectId !== undefined) {
+    if (onProjectsRoot && !projectId && firstProjectId !== undefined) {
       navigate(`/projects/${firstProjectId}`, { replace: true });
     }
-  }, [projectId, firstProjectId, navigate]);
+  }, [onProjectsRoot, projectId, firstProjectId, navigate]);
 
-  async function addProject(event: React.FormEvent) {
+  async function addProject(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmed = title.trim();
     if (!trimmed) return;
@@ -49,6 +50,32 @@ export const ProjectsLayout: React.FC = () => {
           <p className="text-xs text-gray-500 dark:text-gray-400">{user?.email}</p>
         </div>
         <div className="flex items-center gap-2">
+          <NavLink
+            to="/projects/analytics"
+            className={({ isActive }) =>
+              [
+                'rounded-xl border px-3 py-1.5 text-xs font-medium transition-all',
+                isActive
+                  ? 'border-indigo-500 text-indigo-600 dark:text-indigo-300'
+                  : 'border-gray-200 hover:bg-gray-100 dark:border-gray-800 dark:hover:bg-gray-800',
+              ].join(' ')
+            }
+          >
+            Аналитика
+          </NavLink>
+          <NavLink
+            to="/projects/settings"
+            className={({ isActive }) =>
+              [
+                'rounded-xl border px-3 py-1.5 text-xs font-medium transition-all',
+                isActive
+                  ? 'border-indigo-500 text-indigo-600 dark:text-indigo-300'
+                  : 'border-gray-200 hover:bg-gray-100 dark:border-gray-800 dark:hover:bg-gray-800',
+              ].join(' ')
+            }
+          >
+            Уведомления
+          </NavLink>
           <ThemeToggle />
           <button
             type="button"
@@ -112,9 +139,7 @@ export const ProjectsLayout: React.FC = () => {
           </form>
 
           <nav className="space-y-1.5">
-            {projects.isPending && (
-              <p className="px-1 text-xs text-gray-500">Загружаем проекты…</p>
-            )}
+            {projects.isPending && <p className="px-1 text-xs text-gray-500">Загружаем проекты…</p>}
             {projects.isError && (
               <p role="alert" className="px-1 text-xs text-red-500">
                 {describeError(projects.error)}
@@ -144,7 +169,9 @@ export const ProjectsLayout: React.FC = () => {
           </nav>
         </aside>
 
-        <main>
+        {/* min-w-0: без него колонка грида растягивается содержимым
+            доски и по всей странице появляется горизонтальная прокрутка. */}
+        <main className="min-w-0">
           <Outlet />
         </main>
       </div>

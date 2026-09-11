@@ -23,6 +23,20 @@ os.environ.update(
         "COOKIE_SECURE": "false",
         "SSE_REVOCATION_CHECK_SECONDS": "1",
         "SSE_STREAM_SECONDS": "15",
+        # Окружение тестов задаётся полностью: локальный .env не должен менять
+        # поведение. Например, поднятые для e2e лимиты превращали проверку 429
+        # в сотни вычислений Argon2.
+        "LOGIN_RATE_LIMIT": "10",
+        "OTP_REQUEST_LIMIT": "5",
+        "SECRET_KEY": "test-only-secret",
+        "ENABLE_TESTING_ENDPOINTS": "false",
+        "OTP_LOG_CODES": "false",
+        # Внешние сервисы выключены: используются заглушки.
+        "SMTP_HOST": "",
+        "TELEGRAM_BOT_TOKEN": "",
+        "ANTHROPIC_API_KEY": "",
+        "GOOGLE_CLIENT_ID": "",
+        "GITHUB_CLIENT_ID": "",
     }
 )
 
@@ -30,7 +44,7 @@ import psycopg  # noqa: E402
 import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from redis.asyncio import Redis  # noqa: E402
-from sqlalchemy import text  # noqa: E402
+from sqlalchemy import select, text  # noqa: E402
 
 from app.config import get_settings  # noqa: E402
 from app.db import SessionLocal, engine  # noqa: E402
@@ -40,6 +54,15 @@ from app.models import Base  # noqa: E402
 settings = get_settings()
 
 TABLES = (
+    "task_notifications",
+    "notification_prefs",
+    "attachments",
+    "task_tags",
+    "tags",
+    "categories",
+    "board_columns",
+    "oauth_accounts",
+    "otp_codes",
     "audit_events",
     "refresh_tokens",
     "auth_sessions",
@@ -57,6 +80,14 @@ def _ensure_test_database() -> None:
         exists = conn.execute("SELECT 1 FROM pg_database WHERE datname = 'todo_test'").fetchone()
         if not exists:
             conn.execute("CREATE DATABASE todo_test")
+
+    # Схема пересоздаётся с нуля: create_all добавляет недостающие таблицы, но
+    # не меняет существующие, и тесты шли бы против устаревших колонок.
+    with psycopg.connect(
+        "postgresql://todo:todo@127.0.0.1:55433/todo_test", autocommit=True
+    ) as conn:
+        conn.execute("DROP SCHEMA public CASCADE")
+        conn.execute("CREATE SCHEMA public")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -183,11 +214,66 @@ async def db_session():
 # --- Помощники -----------------------------------------------------------
 
 
+OTP_CODE = "424242"
+
+
+async def plant_otp(email: str, purpose: str, code: str = OTP_CODE) -> None:
+    """Подменяет код у последнего непогашенного запроса на известный тесту.
+
+    Так проверяется настоящий поток с подтверждением: письма в тестах уходят в
+    заглушку, а хеш кода необратим, поэтому «подсмотреть» его иначе нельзя.
+    """
+    from sqlalchemy import update
+
+    from app.models import OtpCode
+    from app.otp import hash_code
+
+    async with SessionLocal() as session:
+        latest = await session.scalar(
+            select(OtpCode.id)
+            .where(
+                OtpCode.email == email.lower(),
+                OtpCode.purpose == purpose,
+                OtpCode.consumed_at.is_(None),
+            )
+            .order_by(OtpCode.id.desc())
+            .limit(1)
+        )
+        assert latest is not None, "Запрос кода не создал запись"
+        await session.execute(
+            update(OtpCode)
+            .where(OtpCode.id == latest)
+            .values(code_hash=hash_code(settings, email.lower(), code))
+        )
+        await session.commit()
+
+
 async def register(http: AsyncClient, email: str, password: str = "correct-horse-battery") -> str:
-    """Регистрирует пользователя и возвращает первый access token."""
-    response = await http.post("/api/v1/auth/register", json={"email": email, "password": password})
-    assert response.status_code == 201, response.text
-    return response.json()["access_token"]
+    """Регистрация с подтверждением кодом; возвращает первый access token."""
+    started = await http.post("/api/v1/auth/register", json={"email": email, "password": password})
+    assert started.status_code == 202, started.text
+    await plant_otp(email, "register")
+
+    verified = await http.post(
+        "/api/v1/auth/otp/verify",
+        json={"email": email, "code": OTP_CODE, "purpose": "register"},
+    )
+    assert verified.status_code == 200, verified.text
+    return verified.json()["access_token"]
+
+
+async def login(http: AsyncClient, email: str, password: str = "correct-horse-battery") -> str:
+    """Вход с подтверждением кодом."""
+    started = await http.post("/api/v1/auth/login", json={"email": email, "password": password})
+    assert started.status_code == 202, started.text
+    await plant_otp(email, "login")
+
+    verified = await http.post(
+        "/api/v1/auth/otp/verify",
+        json={"email": email, "code": OTP_CODE, "purpose": "login"},
+    )
+    assert verified.status_code == 200, verified.text
+    return verified.json()["access_token"]
 
 
 async def fresh_access(http: AsyncClient, purpose: str = "api") -> str:
@@ -207,6 +293,17 @@ async def create_project(http: AsyncClient, title: str = "Проект") -> int:
     )
     assert response.status_code == 201, response.text
     return response.json()["id"]
+
+
+async def create_task(http: AsyncClient, project_id: int, title: str = "Задача", **fields) -> dict:
+    """Создаёт задачу: заголовок теперь обычная колонка, а не JSONB-атрибут."""
+    response = await http.post(
+        "/api/v1/tasks",
+        json={"project_id": project_id, "title": title, **fields},
+        headers=bearer(await fresh_access(http)),
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
 
 
 async def set_metadata(rows: list[dict]) -> None:

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from ..dependencies import CurrentPrincipal, Db
 from ..models import Project
 from ..schemas import ProjectCreate, ProjectResponse
+from .board import ensure_default_columns
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -37,6 +38,8 @@ async def create_project(payload: ProjectCreate, principal: CurrentPrincipal, db
     )
     db.add(project)
     await db.flush()
+    # Доска без колонок бесполезна: создаём стандартные сразу.
+    await ensure_default_columns(db, project.id)
     result = ProjectResponse.model_validate(project)
     await db.commit()
     return result

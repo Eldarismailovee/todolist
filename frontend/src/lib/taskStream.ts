@@ -11,10 +11,7 @@ const WATCHDOG_MS = 45_000;
  * Один SSE-сеанс. Нативный EventSource не используется: ему нельзя передать
  * заголовок Authorization, а токен в query string авторизацией не является.
  */
-export async function openTaskStream(
-  signal: AbortSignal,
-  onEvent: EventHandler,
-): Promise<void> {
+export async function openTaskStream(signal: AbortSignal, onEvent: EventHandler): Promise<void> {
   const token = await freshAccess('sse');
   if (signal.aborted) return;
 

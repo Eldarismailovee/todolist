@@ -54,11 +54,13 @@ async def test_code_conflicting_with_basemodel_api_rejected(client):
 
 async def test_new_required_field_blocked_while_tasks_lack_it(client):
     await _admin(client)
-    await set_metadata([{"code": "title", "title": "T", "type": "string", "is_required": True}])
+    await set_metadata(
+        [{"code": "label", "title": "Метка", "type": "string", "is_required": False}]
+    )
     project_id = await create_project(client)
     await client.post(
         "/api/v1/tasks",
-        json={"project_id": project_id, "attributes": {"title": "Задача"}},
+        json={"project_id": project_id, "title": "Задача", "attributes": {"label": "не дата"}},
         headers=bearer(await fresh_access(client)),
     )
 
@@ -71,17 +73,23 @@ async def test_new_required_field_blocked_while_tasks_lack_it(client):
 
 async def test_type_change_blocked_for_incompatible_values(client):
     await _admin(client)
-    await set_metadata([{"code": "title", "title": "T", "type": "string", "is_required": True}])
+    await set_metadata(
+        [{"code": "label", "title": "Метка", "type": "string", "is_required": False}]
+    )
     project_id = await create_project(client)
     await client.post(
         "/api/v1/tasks",
-        json={"project_id": project_id, "attributes": {"title": "не дата"}},
+        json={
+            "project_id": project_id,
+            "title": "Задача",
+            "attributes": {"label": "не дата"},
+        },
         headers=bearer(await fresh_access(client)),
     )
 
     response = await client.patch(
-        "/api/v1/admin/task-attributes/title",
-        json={"code": "title", "title": "T", "type": "date", "is_required": True},
+        "/api/v1/admin/task-attributes/label",
+        json={"code": "label", "title": "Метка", "type": "date", "is_required": False},
         headers=bearer(await fresh_access(client)),
     )
 
@@ -94,7 +102,7 @@ async def test_type_change_allowed_when_values_fit(client):
     project_id = await create_project(client)
     await client.post(
         "/api/v1/tasks",
-        json={"project_id": project_id, "attributes": {"when": "2026-09-10"}},
+        json={"project_id": project_id, "title": "Задача", "attributes": {"when": "2026-09-10"}},
         headers=bearer(await fresh_access(client)),
     )
 

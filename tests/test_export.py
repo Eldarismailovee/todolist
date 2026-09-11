@@ -8,7 +8,6 @@ from .conftest import bearer, create_project, fresh_access, register, set_metada
 from .test_isolation import new_client
 
 METADATA = [
-    {"code": "title", "title": "Название", "type": "string", "is_required": True},
     {"code": "done", "title": "Готово", "type": "boolean", "is_required": False},
 ]
 
@@ -44,7 +43,8 @@ async def _seed(client, email: str, projects: int, tasks_per_project: int) -> No
                 "/api/v1/tasks",
                 json={
                     "project_id": project_id,
-                    "attributes": {"title": f"Задача {task}", "done": task % 2 == 0},
+                    "title": f"Задача {task}",
+                    "attributes": {"done": task % 2 == 0},
                 },
                 headers=bearer(await fresh_access(client)),
             )
@@ -69,7 +69,7 @@ async def test_export_contains_only_own_data_without_secrets(client):
     assert body["user"]["email"] == "exporter@example.com"
     assert [p["title"] for p in body["projects"]] == ["Проект 0", "Проект 1"]
     assert all(len(p["tasks"]) == 2 for p in body["projects"])
-    assert {m["code"] for m in body["attribute_meta"]} == {"title", "done"}
+    assert {m["code"] for m in body["attribute_meta"]} == {"done"}
 
     serialized = response.text
     for secret in ("hashed_password", "$argon2", "refresh", "access_token"):

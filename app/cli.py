@@ -1,8 +1,8 @@
 """Служебные команды: первый администратор и наполнение справочника атрибутов.
 
-    uv run python -m app.cli create-admin admin@example.com 'длинный-пароль'
-    uv run python -m app.cli grant-admin admin@example.com
-    uv run python -m app.cli seed-attributes
+uv run python -m app.cli create-admin admin@example.com 'длинный-пароль'
+uv run python -m app.cli grant-admin admin@example.com
+uv run python -m app.cli seed-attributes
 """
 
 import argparse
@@ -16,11 +16,13 @@ from .db import SessionLocal, engine
 from .models import TaskAttributeMeta, User
 from .security import hash_password
 
+# Справочник описывает ДОПОЛНИТЕЛЬНЫЕ поля. Заголовок, срок и признак
+# выполнения — обычные колонки задачи, дублировать их здесь нельзя: обязательный
+# атрибут с таким же смыслом ломал бы создание задачи из интерфейса.
 DEFAULT_ATTRIBUTES = [
-    {"code": "title", "title": "Название", "type": "string", "is_required": True},
-    {"code": "done", "title": "Готово", "type": "boolean", "is_required": True},
-    {"code": "due_date", "title": "Срок", "type": "date", "is_required": False},
-    {"code": "note", "title": "Заметка", "type": "string", "is_required": False},
+    {"code": "priority", "title": "Приоритет", "type": "string", "is_required": False},
+    {"code": "billable", "title": "Оплачиваемая", "type": "boolean", "is_required": False},
+    {"code": "reminder_date", "title": "Дата напоминания", "type": "date", "is_required": False},
 ]
 
 
