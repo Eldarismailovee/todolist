@@ -56,8 +56,13 @@ def _challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
-async def start(redis: Redis, settings: Settings, provider: str) -> str:
-    """Возвращает адрес провайдера и запоминает state на время перехода."""
+async def start(redis: Redis, settings: Settings, provider: str) -> tuple[str, str]:
+    """Возвращает адрес провайдера и state, запомненный на время перехода.
+
+    State отдаётся наружу, потому что одной записи в Redis мало: она не
+    говорит, тот ли это браузер, что начинал вход. Роутер кладёт его же в
+    cookie и сверяет на возврате.
+    """
     config = settings.oauth_provider(provider)
     if not config["client_id"]:
         raise OAuthError(f"Провайдер {provider} не настроен")

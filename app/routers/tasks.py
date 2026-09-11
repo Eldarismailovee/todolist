@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from .. import events, idempotency, ordering
-from ..attachments import sign_content, strip_signatures
+from ..attachments import check_attachments, owned_attachments, sign_content, strip_signatures
 from ..attributes import load_metadata, validate_or_422
 from ..config import Settings
 from ..content import ContentError, extract_text
@@ -110,19 +110,37 @@ def _with_tags(statement: Select) -> Select:
     return statement.options(selectinload(Task.tags))
 
 
-def _response(task: Task, settings: Settings) -> TaskResponse:
-    """Ответ с подписанными ссылками на картинки.
+async def _responses(
+    db: AsyncSession, settings: Settings, owner_id: int, tasks
+) -> list[TaskResponse]:
+    """Ответы с подписанными ссылками на картинки.
 
     В базе хранится «голый» путь: подпись живёт час и не должна попадать
-    в долговременное хранилище.
+    в долговременное хранилище. Владелец вложений проверяется одним запросом
+    на всю выдачу — и для документов, сохранённых до этой проверки.
     """
-    result = TaskResponse.model_validate(task)
-    result.content = sign_content(settings, result.content)
-    return result
+    results = [TaskResponse.model_validate(task) for task in tasks]
+    owned = await owned_attachments(db, owner_id, [result.content for result in results])
+    for result in results:
+        result.content = sign_content(settings, result.content, owned)
+    return results
 
 
-def _responses(tasks, settings: Settings) -> list[TaskResponse]:
-    return [_response(task, settings) for task in tasks]
+async def _response(
+    db: AsyncSession, settings: Settings, owner_id: int, task: Task
+) -> TaskResponse:
+    return (await _responses(db, settings, owner_id, [task]))[0]
+
+
+async def _replayed(db: AsyncSession, settings: Settings, owner_id: int, cached: dict) -> dict:
+    """Повтор по Idempotency-Key: подписи выпускаются заново.
+
+    Сохранённые в кэше живут час и к повтору могут истечь; заодно ответ,
+    записанный до проверки владельца, не отдаст чужую подписанную ссылку.
+    """
+    content = strip_signatures(cached.get("content"))
+    owned = await owned_attachments(db, owner_id, [content])
+    return {**cached, "content": sign_content(settings, content, owned)}
 
 
 @router.get("", response_model=list[TaskResponse])
@@ -194,7 +212,7 @@ async def list_tasks(
         statement = statement.where(Task.attributes.contains(fragment))
 
     tasks = (await db.scalars(_with_tags(statement).limit(limit).offset(offset))).all()
-    return _responses(tasks, settings)
+    return await _responses(db, settings, principal.user_id, tasks)
 
 
 @router.get("/search", response_model=list[TaskResponse])
@@ -223,7 +241,7 @@ async def search_tasks(
         .limit(limit)
     )
     tasks = (await db.scalars(_with_tags(statement))).all()
-    return _responses(tasks, settings)
+    return await _responses(db, settings, principal.user_id, tasks)
 
 
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
@@ -240,7 +258,7 @@ async def create_task(
     if key is not None:
         replayed = await idempotency.begin(redis, settings, principal.user_id, key, fingerprint)
         if replayed is not None:
-            return replayed
+            return await _replayed(db, settings, principal.user_id, replayed)
 
     try:
         project = await _owned_project(db, payload.project_id, principal.user_id)
@@ -256,6 +274,7 @@ async def create_task(
             )
         await _check_category(db, payload.category_id, principal.user_id)
         tags = await _resolve_tags(db, payload.tag_ids, principal.user_id)
+        await check_attachments(db, principal.user_id, payload.content)
 
         metadata = await load_metadata(db)
         attributes = validate_or_422(payload.attributes, metadata)
@@ -278,7 +297,7 @@ async def create_task(
         db.add(task)
         await db.flush()
         await db.refresh(task, attribute_names=["created_at", "updated_at"])
-        result = _response(task, settings)
+        result = await _response(db, settings, principal.user_id, task)
         await db.commit()
     except (HTTPException, SQLAlchemyError):
         # Мутация не состоялась — резерв ключа снимается, повтор разрешён.
@@ -319,6 +338,7 @@ async def update_task(
     if "description" in fields:
         task.description = fields["description"]
     if "content" in fields:
+        await check_attachments(db, principal.user_id, fields["content"])
         task.content = strip_signatures(fields["content"])
         task.content_text = _content_text(fields["content"])
     if "due_at" in fields:
@@ -344,7 +364,7 @@ async def update_task(
     # updated_at считает СУБД (onupdate=func.now()): значение после UPDATE
     # помечено устаревшим, и его нужно перечитать явно, а не неявным I/O.
     await db.refresh(task, attribute_names=["updated_at"])
-    result = _response(task, settings)
+    result = await _response(db, settings, principal.user_id, task)
     await db.commit()
 
     await events.publish_after_commit(
@@ -418,7 +438,7 @@ async def move_task(
 
     await db.flush()
     await db.refresh(task, attribute_names=["updated_at"])
-    result = _response(task, settings)
+    result = await _response(db, settings, principal.user_id, task)
     await db.commit()
 
     await events.publish_after_commit(

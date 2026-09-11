@@ -1,14 +1,18 @@
 """Поиск, теги и категории, вложения, ассистент, аналитика, уведомления."""
 
 import io
+import json
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
+from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Task, TaskNotification
 
 from .conftest import bearer, create_project, create_task, fresh_access, register
+
+settings = get_settings()
 
 RICH_CONTENT = {
     "type": "doc",
@@ -254,6 +258,136 @@ async def test_content_stores_bare_path_and_returns_signed(client):
         stored = await session.scalar(select(Task).where(Task.id == task["id"]))
         src = stored.content["content"][0]["attrs"]["src"]
     assert "sig=" not in src and src.startswith("/api/v1/files/")
+
+
+def _document(src: str) -> dict:
+    return {"type": "doc", "content": [{"type": "image", "attrs": {"src": src, "alt": "точка"}}]}
+
+
+async def _upload_by_stranger(email: str) -> str:
+    """Файл чужого пользователя; возвращает его UUID."""
+    from .test_isolation import new_client
+
+    async with new_client() as stranger:
+        await register(stranger, email)
+        uploaded = await stranger.post(
+            "/api/v1/files",
+            files={"file": ("dot.png", io.BytesIO(PNG), "image/png")},
+            headers=bearer(await fresh_access(stranger)),
+        )
+    assert uploaded.status_code == 201, uploaded.text
+    return uploaded.json()["id"]
+
+
+async def test_foreign_attachment_in_content_is_rejected(client):
+    """Ссылка на чужой файл не должна превращаться в подпись к нему.
+
+    Подпись даёт скачивание без сессии, поэтому документ — не способ получить
+    доступ, которого у владельца задачи нет.
+    """
+    foreign_id = await _upload_by_stranger("filethief-victim@example.com")
+    await register(client, "filethief@example.com")
+    project_id = await create_project(client)
+
+    created = await client.post(
+        "/api/v1/tasks",
+        json={
+            "project_id": project_id,
+            "title": "Чужая картинка",
+            "content": _document(f"/api/v1/files/{foreign_id}"),
+        },
+        headers=bearer(await fresh_access(client)),
+    )
+
+    assert created.status_code == 422, created.text
+
+    task = await create_task(client, project_id, "Своя задача")
+    patched = await client.patch(
+        f"/api/v1/tasks/{task['id']}",
+        json={"content": _document(f"/api/v1/files/{foreign_id}")},
+        headers=bearer(await fresh_access(client)),
+    )
+
+    assert patched.status_code == 422, patched.text
+    # Файл по-прежнему недоступен без сессии владельца.
+    assert (await client.get(f"/api/v1/files/{foreign_id}")).status_code == 404
+
+
+async def test_stored_foreign_attachment_is_never_signed(client):
+    """Документ, сохранённый до проверки на записи, подписи не получает."""
+    foreign_id = await _upload_by_stranger("oldlink-victim@example.com")
+    await register(client, "oldlink@example.com")
+    project_id = await create_project(client)
+    task = await create_task(client, project_id, "Старая задача")
+
+    async with SessionLocal() as session:
+        await session.execute(
+            update(Task)
+            .where(Task.id == task["id"])
+            .values(content=_document(f"/api/v1/files/{foreign_id}"))
+        )
+        await session.commit()
+
+    listing = await client.get(
+        f"/api/v1/tasks?project_id={project_id}", headers=bearer(await fresh_access(client))
+    )
+
+    src = listing.json()[0]["content"]["content"][0]["attrs"]["src"]
+    assert src == f"/api/v1/files/{foreign_id}"
+    assert (await client.get(src)).status_code == 404
+
+
+async def test_replay_does_not_hand_out_foreign_signature(client, redis_client):
+    """Повтор по Idempotency-Key подписывает заново, а не отдаёт кэш как есть."""
+    foreign_id = await _upload_by_stranger("replay-victim@example.com")
+    await register(client, "replay@example.com")
+    project_id = await create_project(client)
+    body = {"project_id": project_id, "title": "Повтор"}
+    headers = {**bearer(await fresh_access(client)), "Idempotency-Key": "replay-key-0001"}
+
+    first = await client.post("/api/v1/tasks", json=body, headers=headers)
+    assert first.status_code == 201, first.text
+
+    # Кэш ответа мог быть записан до проверки владельца: подменяем его так,
+    # как выглядела бы запись со старой ссылкой.
+    keys = [key async for key in redis_client.scan_iter(match=f"{settings.key_prefix}idem:*")]
+    assert len(keys) == 1
+    record = json.loads(await redis_client.get(keys[0]))
+    record["response"]["content"] = _document(f"/api/v1/files/{foreign_id}")
+    await redis_client.set(keys[0], json.dumps(record))
+
+    replayed = await client.post(
+        "/api/v1/tasks",
+        json=body,
+        headers={**bearer(await fresh_access(client)), "Idempotency-Key": "replay-key-0001"},
+    )
+
+    assert replayed.status_code == 201, replayed.text
+    src = replayed.json()["content"]["content"][0]["attrs"]["src"]
+    assert "sig=" not in src
+    assert (await client.get(src)).status_code == 404
+
+
+async def test_own_attachment_is_signed_on_read_and_downloads(client):
+    """Регресс наоборот: собственный файл продолжает открываться."""
+    await register(client, "ownfile@example.com")
+    project_id = await create_project(client)
+    uploaded = await client.post(
+        "/api/v1/files",
+        files={"file": ("dot.png", io.BytesIO(PNG), "image/png")},
+        headers=bearer(await fresh_access(client)),
+    )
+    await create_task(client, project_id, "С картинкой", content=_document(uploaded.json()["url"]))
+
+    listing = await client.get(
+        f"/api/v1/tasks?project_id={project_id}", headers=bearer(await fresh_access(client))
+    )
+
+    src = listing.json()[0]["content"]["content"][0]["attrs"]["src"]
+    assert "sig=" in src
+    downloaded = await client.get(src)
+    assert downloaded.status_code == 200
+    assert downloaded.content == PNG
 
 
 # --- AI-ассистент --------------------------------------------------------

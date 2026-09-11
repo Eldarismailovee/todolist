@@ -12,7 +12,7 @@ import logging
 import signal
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -102,6 +102,9 @@ async def run_once() -> int:
             )
         ).all()
 
+        notifications_to_insert = []
+        tasks_mapping = {}
+
         for task, user, prefs in rows:
             # Значения по умолчанию проставляются при INSERT, поэтому у
             # несохранённого объекта поля были бы None и почта молча
@@ -123,16 +126,48 @@ async def run_once() -> int:
             else:
                 continue
 
-            already = await db.scalar(
-                select(TaskNotification.id).where(
-                    TaskNotification.task_id == task.id, TaskNotification.kind == kind
-                )
-            )
-            if already:
-                continue
+            # Собираем каналы динамически на основе настроек пользователя
+            channels_list = []
+            if prefs.email_enabled:
+                channels_list.append("email")
+            if prefs.telegram_enabled:
+                channels_list.append("telegram")
+            channels_str = ",".join(channels_list)
 
-            if await _deliver(db, mailer, telegram, task, user, prefs, kind):
-                sent += 1
+            # Добавляем в список для массовой вставки
+            notifications_to_insert.append({
+                "task_id": task.id,
+                "kind": kind,
+                "channels": channels_str,
+            })
+            
+            # Запоминаем контекст для последующей отправки
+            tasks_mapping[(task.id, kind)] = (task, user, prefs)
+
+        if notifications_to_insert:
+            stmt = (
+                insert(TaskNotification)
+                .values(notifications_to_insert)
+                .on_conflict_do_nothing(index_elements=["task_id", "kind"])
+                .returning(TaskNotification.task_id, TaskNotification.kind)
+            )
+            
+            result = await db.execute(stmt)
+            inserted_rows = result.all()  # Получаем только те записи, которые реально создались
+
+            # Если внутри _deliver() будут делаться изменения в этой же сессии db,
+            # полезно зафиксировать стейт вставки, чтобы избежать конфликтов блокировок
+            await db.flush()
+
+            # Отправляем уведомления только для успешно вставленных записей
+            for task_id, kind in inserted_rows:
+                task, user, prefs = tasks_mapping[(task_id, kind)]
+                
+                if await _deliver(db, mailer, telegram, task, user, prefs, kind):
+                    sent += 1
+                    
+        # Фиксируем транзакцию в конце прохода
+        await db.commit()
 
     return sent
 
