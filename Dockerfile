@@ -20,6 +20,8 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
+# README объявлен в pyproject как readme, без него hatchling не собирает пакет.
+COPY README.md ./
 RUN uv sync --frozen --no-dev
 
 # Процесс не должен работать от root.

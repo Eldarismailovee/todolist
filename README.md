@@ -226,13 +226,24 @@ GIN-индексом: значение не может разойтись со �
 
 ## CI/CD и деплой
 
-`.github/workflows/ci.yml` на каждый pull request прогоняет три задачи: бэкенд
-(ruff + миграции + pytest на настоящих PostgreSQL и Redis), фронтенд (ESLint,
-Prettier, Vitest, сборка и проверка, что `schema.d.ts` не отстал от OpenAPI) и
+`.github/workflows/ci.yml` на каждый pull request прогоняет пять задач: бэкенд
+(ruff + миграции + pytest на настоящих PostgreSQL и Redis), контракт (см. ниже),
+фронтенд (ESLint, Prettier, Vitest, сборка), сборку образа API без публикации и
 сквозные тесты в Chromium.
 
-`.github/workflows/deploy.yml` при слиянии в `main` выкладывает SPA на Vercel
-(`frontend/vercel.json`) и публикует образ API в GHCR.
+Контракт проверяется от исходников, а не сравнением двух checked-in файлов:
+задача выгружает OpenAPI из текущего кода (`uv run python -m app.cli
+export-openapi`), генерирует из него типы (`npm run gen:api`) и требует, чтобы
+`openapi.json` и `frontend/src/api/schema.d.ts` в репозитории совпали с
+результатом. Выгрузка принудительно отключает `ENABLE_TESTING_ENDPOINTS`:
+служебных маршрутов нет в production, значит их нет и в контракте, а локальный
+`.env` разработчика на результат не влияет.
+
+Выкладка живёт в том же workflow: задачи `deploy-spa` (Vercel,
+`frontend/vercel.json`) и `deploy-api` (образ в GHCR) идут через
+`needs: [backend, frontend, contract, image, e2e]` и только на push в `main`.
+Отдельного `deploy.yml` больше нет — он запускался по тому же push независимо
+от проверок и мог выложить непрошедший CI код.
 
 **Бэкенд нельзя развернуть на Vercel.** SSE держит соединение минутами, а
 подписчик Redis Pub/Sub должен жить между запросами — serverless-функции этого
