@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { z } from 'zod';
 
 /**
  * Обновление cookie идёт через отдельный instance без auth-interceptor:
@@ -153,18 +154,40 @@ export function describeError(error: unknown): string {
   return 'Неизвестная ошибка';
 }
 
-/** Полевые ошибки 422 для переноса в react-hook-form через setError. */
+/**
+ * Тело ошибки валидации FastAPI. Форма проверяется, а не предполагается:
+ * массив `detail` встречается и в других ответах, а его элементы приходят из
+ * сети и могут не иметь ни `loc`, ни `msg`.
+ */
+const ValidationBody = z.object({
+  detail: z.array(
+    z.object({
+      loc: z.array(z.union([z.string(), z.number().int()])),
+      msg: z.string(),
+    }),
+  ),
+});
+
+/**
+ * Полевые ошибки 422: путь поля → сообщение.
+ *
+ * Ключ — полный путь внутри тела с точками и индексами: `attributes.deadline`,
+ * `tag_ids.0`. Последний элемент `loc` для этого не годится: `attributes`
+ * и `tag_ids` схлопывались бы в имя вложенного ключа, а разные поля с
+ * одинаковым последним сегментом затирали бы друг друга.
+ */
 export function fieldErrors(error: unknown): Record<string, string> {
-  if (!axios.isAxiosError(error)) return {};
-  const detail = error.response?.data?.detail;
-  if (!Array.isArray(detail)) return {};
+  if (!axios.isAxiosError<unknown>(error) || error.response?.status !== 422) return {};
+  const parsed = ValidationBody.safeParse(error.response.data);
+  if (!parsed.success) return {};
+
   const result: Record<string, string> = {};
-  for (const item of detail as Array<{ loc?: unknown[]; msg?: string }>) {
-    const location = item.loc ?? [];
-    const field = location[location.length - 1];
-    if (typeof field === 'string' && item.msg && field !== 'attributes') {
-      result[field] = item.msg;
-    }
+  for (const issue of parsed.data.detail) {
+    // Ошибки query, path и заголовков к полям формы не относятся.
+    if (issue.loc[0] !== 'body') continue;
+    const path = issue.loc.slice(1).map(String).join('.');
+    // Первое сообщение по полю: остальные обычно уточняют то же самое.
+    if (path) result[path] ??= issue.msg;
   }
   return result;
 }

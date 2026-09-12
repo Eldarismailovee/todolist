@@ -20,6 +20,7 @@ from ..attributes import load_metadata, validate_or_422
 from ..config import Settings
 from ..content import ContentError, extract_text
 from ..dependencies import CurrentPrincipal, Db, RedisDep, SettingsDep
+from ..errors import field_error
 from ..models import BoardColumn, Category, Project, Tag, Task, TaskTag
 from ..schemas import TaskCreate, TaskMove, TaskResponse, TaskUpdate
 
@@ -58,7 +59,7 @@ async def _check_column(
         select(BoardColumn).where(BoardColumn.id == column_id, BoardColumn.project_id == project_id)
     )
     if column is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Колонка не найдена в проекте")
+        raise field_error(["column_id"], "Колонка не найдена в проекте")
     return column
 
 
@@ -69,7 +70,7 @@ async def _check_category(db: AsyncSession, category_id: int | None, user_id: in
         select(Category.id).where(Category.id == category_id, Category.owner_id == user_id)
     )
     if exists is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Категория не найдена")
+        raise field_error(["category_id"], "Категория не найдена")
 
 
 async def _resolve_tags(db: AsyncSession, tag_ids: list[int], user_id: int) -> list[Tag]:
@@ -80,7 +81,7 @@ async def _resolve_tags(db: AsyncSession, tag_ids: list[int], user_id: int) -> l
     ).all()
     if len(tags) != len(set(tag_ids)):
         # Чужой тег не должен молча исчезать из запроса.
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Тег не найден")
+        raise field_error(["tag_ids"], "Тег не найден")
     return list(tags)
 
 
@@ -88,7 +89,7 @@ def _content_text(content: dict | None) -> str | None:
     try:
         text = extract_text(content)
     except ContentError as error:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+        raise field_error(["content"], str(error)) from error
     return text or None
 
 

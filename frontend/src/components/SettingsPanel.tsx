@@ -1,9 +1,11 @@
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 
 import { useNotificationPrefs, useSaveNotificationPrefs } from '../api/queries';
 import type { NotificationPrefs } from '../api/types';
-import { api, describeError } from '../lib/http';
+import { fieldRoot, invalidProps } from '../lib/fields';
+import { api, describeError, fieldErrors } from '../lib/http';
 import { useAuthStore } from '../stores/authStore';
+import { FieldError } from './FieldError';
 
 const field =
   'w-full rounded-xl border border-transparent bg-gray-100 px-3 py-2 text-sm transition-all outline-none focus:border-indigo-500 dark:bg-gray-800';
@@ -31,9 +33,28 @@ export const SettingsPanel = () => {
   // ререндер и затирала бы ввод при фоновом обновлении.
   const [draft, setDraft] = useState<NotificationPrefs | null>(null);
   const [testState, setTestState] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const inputs = useRef<Record<string, HTMLElement | null>>({});
 
   const form = draft ?? prefs.data ?? DEFAULTS;
   const setForm = setDraft;
+
+  const shownFields = ['telegram_chat_id', 'lead_time_minutes'];
+  const otherErrors = Object.entries(errors).filter(
+    ([path]) => !shownFields.includes(fieldRoot(path)),
+  );
+
+  async function submit() {
+    setErrors({});
+    try {
+      await save.mutateAsync(form);
+    } catch (error) {
+      const fields = fieldErrors(error);
+      setErrors(fields);
+      const first = shownFields.find((name) => fields[name]);
+      if (first) inputs.current[first]?.focus();
+    }
+  }
 
   async function sendTest() {
     setTestState(null);
@@ -86,13 +107,18 @@ export const SettingsPanel = () => {
             </label>
             <input
               id={chatId}
+              ref={(element) => {
+                inputs.current.telegram_chat_id = element;
+              }}
               inputMode="numeric"
               value={form.telegram_chat_id ?? ''}
               onChange={(event) =>
                 setForm({ ...form, telegram_chat_id: event.target.value || null })
               }
               className={field}
+              {...invalidProps(chatId, errors.telegram_chat_id)}
             />
+            <FieldError id={`${chatId}-error`} message={errors.telegram_chat_id} />
             <p className="text-xs text-gray-500 dark:text-gray-400">
               Напишите боту команду /start — он ответит вашим chat ID.
             </p>
@@ -105,6 +131,9 @@ export const SettingsPanel = () => {
           </label>
           <input
             id={leadId}
+            ref={(element) => {
+              inputs.current.lead_time_minutes = element;
+            }}
             type="number"
             min={5}
             max={10_080}
@@ -113,13 +142,18 @@ export const SettingsPanel = () => {
               setForm({ ...form, lead_time_minutes: Number(event.target.value) || 60 })
             }
             className={field}
+            {...invalidProps(leadId, errors.lead_time_minutes)}
           />
+          <FieldError id={`${leadId}-error`} message={errors.lead_time_minutes} />
         </div>
 
         {save.isError && (
-          <p role="alert" className="text-xs text-red-500">
-            {describeError(save.error)}
-          </p>
+          <div role="alert" className="space-y-1 text-xs text-red-500">
+            {otherErrors.map(([path, message]) => (
+              <p key={path}>{`${path}: ${message}`}</p>
+            ))}
+            {Object.keys(errors).length === 0 && <p>{describeError(save.error)}</p>}
+          </div>
         )}
         {save.isSuccess && !save.isPending && (
           <p className="text-xs text-emerald-600 dark:text-emerald-400">Сохранено</p>
@@ -129,7 +163,7 @@ export const SettingsPanel = () => {
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={() => save.mutate(form)}
+            onClick={() => void submit()}
             disabled={save.isPending}
             className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition-all hover:bg-indigo-500 disabled:opacity-60"
           >

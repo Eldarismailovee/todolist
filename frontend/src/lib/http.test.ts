@@ -64,7 +64,7 @@ describe('сериализация параметров запроса', () => {
 });
 
 describe('fieldErrors', () => {
-  it('раскладывает ошибки 422 по именам полей', () => {
+  it('раскладывает ошибки 422 по полному пути поля', () => {
     const error = axiosError(422, {
       detail: [
         { loc: ['body', 'attributes', 'label'], msg: 'обязательное поле', type: 'missing' },
@@ -72,13 +72,47 @@ describe('fieldErrors', () => {
       ],
     });
 
+    // Путь сохраняется целиком: по последнему элементу loc вложенный атрибут
+    // нельзя отличить от одноимённого поля верхнего уровня.
     expect(fieldErrors(error)).toEqual({
-      label: 'обязательное поле',
+      'attributes.label': 'обязательное поле',
       title: 'слишком длинно',
     });
   });
 
-  it('возвращает пустой объект, если ошибок полей нет', () => {
+  it('сохраняет индекс элемента массива', () => {
+    const error = axiosError(422, {
+      detail: [{ loc: ['body', 'tag_ids', 1], msg: 'не число', type: 'int_parsing' }],
+    });
+
+    expect(fieldErrors(error)).toEqual({ 'tag_ids.1': 'не число' });
+  });
+
+  it('оставляет первое сообщение по полю', () => {
+    const error = axiosError(422, {
+      detail: [
+        { loc: ['body', 'title'], msg: 'первое', type: 'value_error' },
+        { loc: ['body', 'title'], msg: 'второе', type: 'value_error' },
+      ],
+    });
+
+    expect(fieldErrors(error)).toEqual({ title: 'первое' });
+  });
+
+  it('пропускает ошибки вне тела запроса', () => {
+    const error = axiosError(422, {
+      detail: [{ loc: ['query', 'project_id'], msg: 'обязательный', type: 'missing' }],
+    });
+
+    expect(fieldErrors(error)).toEqual({});
+  });
+
+  it('принимает только ответ 422 подходящей формы', () => {
+    // Массив detail сам по себе не означает ошибку валидации.
+    expect(
+      fieldErrors(axiosError(409, { detail: [{ loc: ['body', 'title'], msg: 'x' }] })),
+    ).toEqual({});
+    expect(fieldErrors(axiosError(422, { detail: [{ message: 'без loc' }] }))).toEqual({});
     expect(fieldErrors(axiosError(500, { detail: 'сломалось' }))).toEqual({});
     expect(fieldErrors(new Error('обычная ошибка'))).toEqual({});
   });

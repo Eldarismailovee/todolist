@@ -90,6 +90,35 @@ async def test_invalid_attributes_rejected(client, attributes, case):
     assert listing.json() == []
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected_loc"),
+    [
+        ({"category_id": 99_999}, ["body", "category_id"]),
+        ({"tag_ids": [99_999]}, ["body", "tag_ids"]),
+        ({"column_id": 99_999}, ["body", "column_id"]),
+    ],
+)
+async def test_business_validation_names_the_field(client, payload, expected_loc):
+    """Бизнес-проверка отвечает так же, как валидация Pydantic.
+
+    Строка в detail не позволяет форме пометить поле: сообщение «Категория не
+    найдена» нужно связать с category_id, а не показать общим текстом.
+    """
+    project_id = await _setup(client, f"loc{abs(hash(str(expected_loc)))}@example.com")
+
+    response = await client.post(
+        "/api/v1/tasks",
+        json={"project_id": project_id, "title": "Задача", "attributes": VALID, **payload},
+        headers=bearer(await fresh_access(client)),
+    )
+
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert isinstance(detail, list)
+    assert detail[0]["loc"] == expected_loc
+    assert detail[0]["msg"]
+
+
 async def test_too_many_attributes_rejected(client):
     project_id = await _setup(client, "many@example.com")
 

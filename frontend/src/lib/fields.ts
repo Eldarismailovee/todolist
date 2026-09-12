@@ -24,3 +24,20 @@ export function orderMetaFields(metaFields: MetaField[]): MetaField[] {
   };
   return [...metaFields].sort((left, right) => rank(left) - rank(right));
 }
+
+/** Верхний уровень пути ошибки: `attributes.deadline` → `attributes`. */
+export function fieldRoot(path: string): string {
+  return path.split('.')[0] ?? path;
+}
+
+/**
+ * Атрибуты доступности для поля с ошибкой. Одного цвета рамки недостаточно:
+ * программа чтения с экрана узнаёт о неверном значении только из aria-invalid,
+ * а текст ошибки получает по aria-describedby.
+ */
+export function invalidProps(id: string, message?: string) {
+  return {
+    'aria-invalid': message ? true : undefined,
+    'aria-describedby': message ? `${id}-error` : undefined,
+  };
+}
