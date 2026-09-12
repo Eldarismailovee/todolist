@@ -10,7 +10,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Task, TaskNotification
 
-from .conftest import bearer, create_project, create_task, fresh_access, register
+from .conftest import PNG, bearer, create_project, create_task, fresh_access, register
 
 settings = get_settings()
 
@@ -166,13 +166,6 @@ async def test_foreign_tag_cannot_be_attached(client):
 
 
 # --- Вложения ------------------------------------------------------------
-
-
-PNG = bytes.fromhex(
-    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-    "890000000a49444154789c6360000002000100ffff03000006000557bfabd400"
-    "00000049454e44ae426082"
-)
 
 
 async def test_image_upload_and_signed_download(client):

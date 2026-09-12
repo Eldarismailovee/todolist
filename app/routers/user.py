@@ -8,10 +8,11 @@ from sqlalchemy.orm import selectinload
 from .. import audit
 from ..cookies import clear_refresh_cookie
 from ..dependencies import CurrentUser, Db, SettingsDep
-from ..models import Project, Task, TaskAttributeMeta, User
+from ..models import Attachment, Project, Task, TaskAttributeMeta, User
 from ..schemas import ChangePasswordRequest, CurrentUserResponse, DeleteAccountRequest
 from ..security import hash_password, require_csrf_guard, verify_password
 from ..sessions import revoke_user_sessions
+from ..storage import remove_attachments
 
 router = APIRouter(prefix="/user", tags=["user"])
 
@@ -142,11 +143,21 @@ async def delete_account(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Неверный пароль")
 
     user_id = user.id
+    # Каскад убирает строки attachments, но не байты на диске: имена нужно
+    # забрать до удаления, иначе файлы остаются навсегда и найти их будет
+    # нечем — владельца у них больше нет.
+    stored_names = list(
+        await db.scalars(select(Attachment.stored_name).where(Attachment.owner_id == user_id))
+    )
     await revoke_user_sessions(db, user_id, "account_deleted")
     audit.add_audit(db, audit.ACCOUNT_DELETED, user_id=user_id, detail=f"user_id={user_id}")
     await db.flush()
     # Проекты и задачи удаляются каскадом по внешним ключам.
     await db.execute(sql_delete(User).where(User.id == user_id))
     await db.commit()
+
+    # Только после commit: удалить файлы у неудалённого аккаунта хуже, чем
+    # оставить их у удалённого. Ошибка уборки не отменяет удаление аккаунта.
+    await remove_attachments(settings, stored_names)
 
     clear_refresh_cookie(response, settings)
