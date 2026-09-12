@@ -1,10 +1,18 @@
 import { useEffect, useId, useRef, useState } from 'react';
 
-import { useCategories, useCreateTag, useTags, useUpdateTask } from '../api/queries';
-import type { RichDocument, Task } from '../api/types';
-import { fieldRoot, invalidProps } from '../lib/fields';
+import {
+  useAttributeMeta,
+  useCategories,
+  useCreateTag,
+  useTags,
+  useUpdateTask,
+} from '../api/queries';
+import type { AttributeValue, RichDocument, Task } from '../api/types';
+import type { AttributeDraft } from '../lib/fields';
+import { attributesDraft, attributesPayload, fieldRoot, invalidProps } from '../lib/fields';
 import { describeError, fieldErrors } from '../lib/http';
 import { AiAssistant } from './AiAssistant';
+import { AttributeFields } from './AttributeFields';
 import { FieldError } from './FieldError';
 import { RichTextEditor } from './RichTextEditor';
 
@@ -22,7 +30,7 @@ const field =
  * с визуальным: после отказа фокус уходит к первому неверному полю.
  */
 const FOCUSABLE_FIELDS = ['title', 'due_at', 'category_id', 'description'] as const;
-const SHOWN_FIELDS = new Set<string>([...FOCUSABLE_FIELDS, 'content', 'tag_ids']);
+const SHOWN_FIELDS = new Set<string>([...FOCUSABLE_FIELDS, 'content', 'tag_ids', 'attributes']);
 
 /** `datetime-local` понимает только «YYYY-MM-DDTHH:mm» в местной зоне. */
 function toLocalInput(iso: string | null): string {
@@ -52,8 +60,19 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
 
   const tags = useTags(userId);
   const categories = useCategories(userId);
+  const attributeMeta = useAttributeMeta();
   const createTag = useCreateTag(userId);
   const update = useUpdateTask(userId);
+
+  const metaFields = attributeMeta.data ?? [];
+  // Черновик появляется после первой правки: до этого показываются сохранённые
+  // значения. Эффект синхронизации затирал бы ввод при фоновом обновлении.
+  const [attributeDraft, setAttributeDraft] = useState<AttributeDraft | null>(null);
+  const attributeValues = attributeDraft ?? attributesDraft(metaFields, task.attributes);
+
+  function setAttribute(code: string, value: AttributeValue | null) {
+    setAttributeDraft({ ...attributeValues, [code]: value });
+  }
 
   // Esc закрывает диалог: без клавиатуры модальное окно недоступно.
   useEffect(() => {
@@ -77,6 +96,9 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
           due_at: dueAt ? new Date(dueAt).toISOString() : null,
           category_id: category,
           tag_ids: tagIds,
+          ...(metaFields.length > 0
+            ? { attributes: attributesPayload(metaFields, attributeValues) }
+            : {}),
         },
       });
       onClose();
@@ -94,8 +116,22 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
   // показывается рядом со списком; всё остальное — общим сообщением, иначе
   // серверный отказ по неизвестному форме полю исчез бы с экрана.
   const tagsError = Object.entries(errors).find(([path]) => fieldRoot(path) === 'tag_ids')?.[1];
-  const otherErrors = Object.entries(errors).filter(([path]) => !SHOWN_FIELDS.has(fieldRoot(path)));
-  const hasShownErrors = Object.keys(errors).some((path) => SHOWN_FIELDS.has(fieldRoot(path)));
+  // Ошибки динамических полей приходят как attributes.<код>.
+  const knownCodes = new Set(metaFields.map((meta) => meta.code));
+  const attributeErrors = Object.fromEntries(
+    Object.entries(errors)
+      .filter(([path]) => path.startsWith('attributes.'))
+      .map(([path, message]) => [path.slice('attributes.'.length), message] as const)
+      .filter(([code]) => knownCodes.has(code)),
+  );
+  // Атрибут, которого нет в справочнике этого клиента, показать у поля негде:
+  // такая ошибка должна попасть в общее сообщение, а не исчезнуть.
+  const isShown = (path: string): boolean =>
+    path.startsWith('attributes.')
+      ? knownCodes.has(path.slice('attributes.'.length))
+      : SHOWN_FIELDS.has(fieldRoot(path));
+  const otherErrors = Object.entries(errors).filter(([path]) => !isShown(path));
+  const hasShownErrors = Object.keys(errors).some(isShown);
 
   function toggleTag(id: number) {
     setTagIds((current) =>
@@ -250,6 +286,21 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
           />
           <FieldError id={`${descriptionId}-error`} message={errors.description} />
         </div>
+
+        {metaFields.length > 0 && (
+          <div className="space-y-1.5">
+            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+              Дополнительные поля
+            </span>
+            <AttributeFields
+              fields={metaFields}
+              values={attributeValues}
+              errors={attributeErrors}
+              onChange={setAttribute}
+              idPrefix={`task-${task.id}-attr`}
+            />
+          </div>
+        )}
 
         <div className="space-y-1.5">
           <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Содержимое</span>

@@ -334,7 +334,9 @@ async def update_task(
     # exclude_unset: пропущенное поле и явный null — разные намерения.
     fields = payload.model_dump(exclude_unset=True)
 
-    if fields.get("title") is not None:
+    # Проверка на None больше не нужна: схема не пропускает null там, где
+    # очистка значения не является операцией.
+    if "title" in fields:
         task.title = fields["title"]
     if "description" in fields:
         task.description = fields["description"]
@@ -352,11 +354,11 @@ async def update_task(
         task.column_id = fields["column_id"]
         if column is not None and column.is_done_column and task.completed_at is None:
             task.completed_at = datetime.now(UTC)
-    if fields.get("completed") is not None:
+    if "completed" in fields:
         task.completed_at = datetime.now(UTC) if fields["completed"] else None
-    if fields.get("tag_ids") is not None:
+    if "tag_ids" in fields:
         task.tags = await _resolve_tags(db, fields["tag_ids"], principal.user_id)
-    if fields.get("attributes") is not None:
+    if "attributes" in fields:
         metadata = await load_metadata(db)
         # JSONB присваивается новым словарём: изменение по месту SQLAlchemy не увидит.
         task.attributes = validate_or_422(fields["attributes"], metadata)

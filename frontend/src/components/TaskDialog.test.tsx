@@ -13,6 +13,9 @@ const updateTask = vi.hoisted(() => vi.fn());
 vi.mock('../api/queries', () => ({
   useTags: () => ({ data: [] }),
   useCategories: () => ({ data: [{ id: 3, name: 'Дом' }] }),
+  useAttributeMeta: () => ({
+    data: [{ code: 'label', title: 'Метка', type: 'string', is_required: true }],
+  }),
   useCreateTag: () => useMutation({ mutationFn: async (name: string) => ({ id: 9, name }) }),
   useUpdateTask: () => useMutation({ mutationFn: updateTask, retry: false }),
   assist: vi.fn(),
@@ -86,7 +89,23 @@ describe('TaskDialog: ошибки валидации', () => {
     expect(input).toHaveFocus();
   });
 
+  it('показывает ошибку динамического атрибута у его поля', async () => {
+    updateTask.mockRejectedValue(
+      validationError([{ loc: ['body', 'attributes', 'label'], msg: 'обязательное поле' }]),
+    );
+
+    render(<TaskDialog task={TASK} userId={1} onClose={vi.fn()} />, { wrapper });
+    await userEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    const input = await screen.findByLabelText(/Метка/);
+    await waitFor(() => expect(input).toHaveAttribute('aria-invalid', 'true'));
+    const messageId = input.getAttribute('aria-describedby');
+    expect(document.getElementById(messageId as string)).toHaveTextContent('обязательное поле');
+  });
+
   it('показывает ошибку по неизвестному форме полю общим сообщением', async () => {
+    // Атрибута deadline нет в справочнике этого клиента: показать его у поля
+    // негде, и сообщение не должно пропасть.
     updateTask.mockRejectedValue(
       validationError([{ loc: ['body', 'attributes', 'deadline'], msg: 'обязательное поле' }]),
     );

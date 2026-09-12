@@ -2,6 +2,7 @@ import { Suspense, lazy, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
 import {
+  useAttributeMeta,
   useCategories,
   useColumns,
   useCreateColumn,
@@ -10,10 +11,13 @@ import {
   useTasks,
   type TaskFilters,
 } from '../api/queries';
-import type { Task } from '../api/types';
-import { describeError } from '../lib/http';
+import type { AttributeValue, Task } from '../api/types';
+import type { AttributeDraft } from '../lib/fields';
+import { attributesPayload } from '../lib/fields';
+import { describeError, fieldErrors } from '../lib/http';
 import { useAuthStore } from '../stores/authStore';
 import { AiAssistant } from './AiAssistant';
+import { AttributeFields } from './AttributeFields';
 import { KanbanBoard } from './KanbanBoard';
 
 /**
@@ -50,6 +54,8 @@ export const ProjectBoard = () => {
   const [openTask, setOpenTask] = useState<Task | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
   const [newColumn, setNewColumn] = useState('');
+  const [draftAttributes, setDraftAttributes] = useState<AttributeDraft>({});
+  const [createErrors, setCreateErrors] = useState<Record<string, string>>({});
 
   const filters: TaskFilters = useMemo(
     () => ({
@@ -65,8 +71,13 @@ export const ProjectBoard = () => {
   const tasks = useTasks(userId, validProject ? projectId : null, filters);
   const tags = useTags(userId);
   const categories = useCategories(userId);
+  const attributeMeta = useAttributeMeta();
   const createTask = useCreateTask(userId, projectId);
   const createColumn = useCreateColumn(userId, projectId);
+
+  // В быстрой форме показываются только обязательные поля: без них задачу
+  // нельзя создать вовсе. Необязательные заполняются в диалоге задачи.
+  const requiredFields = (attributeMeta.data ?? []).filter((meta) => meta.is_required);
 
   if (!validProject) {
     return <p className="text-sm text-red-500">Некорректный идентификатор проекта.</p>;
@@ -81,12 +92,23 @@ export const ProjectBoard = () => {
   async function addTask(title: string) {
     const trimmed = title.trim();
     if (!trimmed) return;
-    // Новая задача попадает в первую колонку доски.
-    await createTask.mutateAsync({
-      title: trimmed,
-      column_id: columns.data?.[0]?.id ?? null,
-    });
-    setDraftTitle('');
+    setCreateErrors({});
+    try {
+      // Новая задача попадает в первую колонку доски.
+      await createTask.mutateAsync({
+        title: trimmed,
+        column_id: columns.data?.[0]?.id ?? null,
+        ...(requiredFields.length > 0
+          ? { attributes: attributesPayload(requiredFields, draftAttributes) }
+          : {}),
+      });
+      setDraftTitle('');
+      setDraftAttributes({});
+    } catch (error) {
+      // Отказ нужно показать у поля: обязательный атрибут иначе выглядит как
+      // необъяснимый сбой создания задачи.
+      setCreateErrors(fieldErrors(error));
+    }
   }
 
   return (
@@ -166,26 +188,42 @@ export const ProjectBoard = () => {
           event.preventDefault();
           void addTask(draftTitle);
         }}
-        className="flex flex-wrap gap-2 rounded-2xl border border-gray-200 bg-white/70 p-4 shadow-xl backdrop-blur-md dark:border-gray-800 dark:bg-gray-900/70"
+        className="space-y-3 rounded-2xl border border-gray-200 bg-white/70 p-4 shadow-xl backdrop-blur-md dark:border-gray-800 dark:bg-gray-900/70"
       >
-        <label htmlFor="new-task" className="sr-only">
-          Новая задача
-        </label>
-        <input
-          id="new-task"
-          value={draftTitle}
-          placeholder="Новая задача…"
-          maxLength={255}
-          onChange={(event) => setDraftTitle(event.target.value)}
-          className={`${field} min-w-[12rem] flex-1`}
+        <div className="flex flex-wrap gap-2">
+          <label htmlFor="new-task" className="sr-only">
+            Новая задача
+          </label>
+          <input
+            id="new-task"
+            value={draftTitle}
+            placeholder="Новая задача…"
+            maxLength={255}
+            onChange={(event) => setDraftTitle(event.target.value)}
+            className={`${field} min-w-[12rem] flex-1`}
+          />
+          <button
+            type="submit"
+            disabled={createTask.isPending || draftTitle.trim().length === 0}
+            className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition-all hover:bg-indigo-500 disabled:opacity-60"
+          >
+            Добавить
+          </button>
+        </div>
+
+        <AttributeFields
+          fields={requiredFields}
+          values={draftAttributes}
+          errors={Object.fromEntries(
+            Object.entries(createErrors)
+              .filter(([path]) => path.startsWith('attributes.'))
+              .map(([path, message]) => [path.slice('attributes.'.length), message]),
+          )}
+          onChange={(code: string, value: AttributeValue | null) =>
+            setDraftAttributes((current) => ({ ...current, [code]: value }))
+          }
+          idPrefix="new-task-attr"
         />
-        <button
-          type="submit"
-          disabled={createTask.isPending || draftTitle.trim().length === 0}
-          className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition-all hover:bg-indigo-500 disabled:opacity-60"
-        >
-          Добавить
-        </button>
       </form>
 
       {createTask.isError && (

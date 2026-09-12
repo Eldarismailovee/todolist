@@ -1090,10 +1090,15 @@ export interface components {
      * @description Частичное обновление: поле меняется, только если явно передано.
      *
      *     `attributes` заменяются целиком — JSONB присваивается новым словарём.
+     *
+     *     Null принимается только там, где очистка значения осмысленна: описание,
+     *     содержимое, срок, колонка и категория. Для заголовка, тегов, атрибутов и
+     *     признака выполнения null операцией не является — раньше он молча
+     *     игнорировался, и клиент не мог отличить его от применённого изменения.
      */
     TaskUpdate: {
       /** Title */
-      title?: string | null;
+      title?: string;
       /** Description */
       description?: string | null;
       /** Content */
@@ -1107,13 +1112,13 @@ export interface components {
       /** Category Id */
       category_id?: number | null;
       /** Tag Ids */
-      tag_ids?: number[] | null;
+      tag_ids?: number[];
       /** Attributes */
       attributes?: {
         [key: string]: string | boolean | null;
-      } | null;
+      };
       /** Completed */
-      completed?: boolean | null;
+      completed?: boolean;
     };
     /** ValidationError */
     ValidationError: {

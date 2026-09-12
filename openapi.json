@@ -3239,16 +3239,9 @@
       "TaskUpdate": {
         "properties": {
           "title": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 255,
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
             "title": "Title"
           },
           "description": {
@@ -3312,64 +3305,43 @@
             "title": "Category Id"
           },
           "tag_ids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0.0
-                },
-                "type": "array",
-                "maxItems": 32
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "items": {
+              "type": "integer",
+              "exclusiveMinimum": 0.0
+            },
+            "type": "array",
+            "maxItems": 32,
             "title": "Tag Ids"
           },
           "attributes": {
-            "anyOf": [
-              {
-                "patternProperties": {
-                  "^[a-z][a-z0-9_]{0,49}$": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+            "patternProperties": {
+              "^[a-z][a-z0-9_]{0,49}$": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
                   }
-                },
-                "type": "object",
-                "maxProperties": 64
-              },
-              {
-                "type": "null"
+                ]
               }
-            ],
+            },
+            "type": "object",
+            "maxProperties": 64,
             "title": "Attributes"
           },
           "completed": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "boolean",
             "title": "Completed"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "title": "TaskUpdate",
-        "description": "Частичное обновление: поле меняется, только если явно передано.\n\n`attributes` заменяются целиком — JSONB присваивается новым словарём."
+        "description": "Частичное обновление: поле меняется, только если явно передано.\n\n`attributes` заменяются целиком — JSONB присваивается новым словарём.\n\nNull принимается только там, где очистка значения осмысленна: описание,\nсодержимое, срок, колонка и категория. Для заголовка, тегов, атрибутов и\nпризнака выполнения null операцией не является — раньше он молча\nигнорировался, и клиент не мог отличить его от применённого изменения."
       },
       "ValidationError": {
         "properties": {

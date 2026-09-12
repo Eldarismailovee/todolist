@@ -12,6 +12,7 @@ from functools import lru_cache
 from typing import Annotated, Any, Literal
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -172,6 +173,21 @@ def _content_byte_limit(value: dict | None) -> dict | None:
     return value
 
 
+def require_datetime_string(value: Any) -> Any:
+    """Момент времени передаётся строкой ISO-8601, а не числом.
+
+    Число Pydantic принял бы как Unix timestamp и подставил бы UTC, то есть
+    отсутствие зоны у клиента превратилось бы в молчаливое допущение сервера.
+    """
+    if not isinstance(value, str):
+        raise ValueError("Ожидается ISO-строка даты и времени с часовым поясом")
+    return value
+
+
+# Срок задачи всегда с зоной: naive-значение в БД истолковывается по её
+# настройкам, и «18:00» пользователя из другого часового пояса уезжает.
+DueAt = Annotated[AwareDatetime, BeforeValidator(require_datetime_string)]
+
 TaskTitle = Annotated[
     str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=255)
 ]
@@ -186,7 +202,7 @@ class TaskCreate(BaseModel):
     description: Annotated[str, StringConstraints(strict=True, max_length=10_000)] | None = None
     # Документ Tiptap как есть; текст для поиска извлекает сервер.
     content: dict[str, Any] | None = None
-    due_at: datetime | None = None
+    due_at: DueAt | None = None
     column_id: PositiveId | None = None
     category_id: PositiveId | None = None
     tag_ids: Annotated[list[PositiveId], Field(max_length=32)] = Field(default_factory=list)
@@ -207,24 +223,29 @@ class TaskUpdate(BaseModel):
     """Частичное обновление: поле меняется, только если явно передано.
 
     `attributes` заменяются целиком — JSONB присваивается новым словарём.
+
+    Null принимается только там, где очистка значения осмысленна: описание,
+    содержимое, срок, колонка и категория. Для заголовка, тегов, атрибутов и
+    признака выполнения null операцией не является — раньше он молча
+    игнорировался, и клиент не мог отличить его от применённого изменения.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    title: TaskTitle | None = None
+    title: TaskTitle = Field(default=None)
     description: Annotated[str, StringConstraints(strict=True, max_length=10_000)] | None = None
     content: dict[str, Any] | None = None
-    due_at: datetime | None = None
+    due_at: DueAt | None = None
     column_id: PositiveId | None = None
     category_id: PositiveId | None = None
-    tag_ids: Annotated[list[PositiveId], Field(max_length=32)] | None = None
-    attributes: Attributes | None = None
-    completed: StrictBool | None = None
+    tag_ids: Annotated[list[PositiveId], Field(max_length=32)] = Field(default=None)
+    attributes: Attributes = Field(default=None)
+    completed: StrictBool = Field(default=None)
 
     @field_validator("attributes")
     @classmethod
-    def check_attributes_size(cls, value: dict | None) -> dict | None:
-        return None if value is None else _attributes_byte_limit(value)
+    def check_attributes_size(cls, value: dict) -> dict:
+        return _attributes_byte_limit(value)
 
     @field_validator("content")
     @classmethod
