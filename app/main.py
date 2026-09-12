@@ -55,6 +55,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await engine.dispose()
 
 
+API_PREFIX = "/api/v1"
+
 app = FastAPI(
     title="Todo App",
     version="2.0.0",
@@ -63,7 +65,12 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
-app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_request_body_bytes)
+app.add_middleware(
+    MaxBodySizeMiddleware,
+    max_bytes=settings.max_request_body_bytes,
+    upload_max_bytes=settings.max_upload_body_bytes,
+    upload_path=f"{API_PREFIX}{files.router.prefix}",
+)
 app.add_middleware(
     CORSMiddleware,
     # При credentialed CORS "*" запрещён: разрешён ровно один origin.
@@ -74,7 +81,7 @@ app.add_middleware(
     max_age=600,
 )
 
-api = APIRouter(prefix="/api/v1")
+api = APIRouter(prefix=API_PREFIX)
 api.include_router(auth.router)
 api.include_router(auth.oauth_router)
 api.include_router(projects.router)
