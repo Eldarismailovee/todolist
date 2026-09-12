@@ -18,7 +18,7 @@ from .. import events, idempotency, ordering
 from ..attachments import check_attachments, owned_attachments, sign_content, strip_signatures
 from ..attributes import load_metadata, validate_or_422
 from ..config import Settings
-from ..content import ContentError, extract_text
+from ..content import ContentError, extract_text, validate_document
 from ..dependencies import CurrentPrincipal, Db, RedisDep, SettingsDep
 from ..errors import field_error
 from ..models import BoardColumn, Category, Project, Tag, Task, TaskTag
@@ -87,6 +87,9 @@ async def _resolve_tags(db: AsyncSession, tag_ids: list[int], user_id: int) -> l
 
 def _content_text(content: dict | None) -> str | None:
     try:
+        # Сначала контракт документа, потом текст для поиска: обход по
+        # непроверенной структуре молча принял бы любые узлы и атрибуты.
+        validate_document(content)
         text = extract_text(content)
     except ContentError as error:
         raise field_error(["content"], str(error)) from error
