@@ -7,6 +7,7 @@ import type {
   AssistResult,
   Attachment,
   BoardColumn,
+  BoardColumnUpdateInput,
   Category,
   CurrentUser,
   MetaField,
@@ -14,6 +15,10 @@ import type {
   Project,
   Tag,
   Task,
+  TaskCreateInput,
+  TaskListQuery,
+  TaskMoveInput,
+  TaskUpdateInput,
 } from './types';
 
 /**
@@ -43,7 +48,9 @@ export interface TaskFilters {
 export function useProjects(userId: number) {
   return useQuery({
     queryKey: queryKeys.projects(userId),
-    queryFn: async (): Promise<Project[]> => (await api.get('/projects')).data,
+    // Параметр типа обязателен: без него data остаётся any и объявленный
+    // Promise<Project[]> ничего не проверяет.
+    queryFn: async (): Promise<Project[]> => (await api.get<Project[]>('/projects')).data,
   });
 }
 
@@ -52,7 +59,7 @@ export function useColumns(userId: number, projectId: number | null) {
     queryKey: queryKeys.columns(userId, projectId ?? 0),
     enabled: projectId !== null,
     queryFn: async (): Promise<BoardColumn[]> =>
-      (await api.get('/board/columns', { params: { project_id: projectId } })).data,
+      (await api.get<BoardColumn[]>('/board/columns', { params: { project_id: projectId } })).data,
   });
 }
 
@@ -61,18 +68,16 @@ export function useTasks(userId: number, projectId: number | null, filters: Task
     // Фильтры входят в ключ: иначе на экране остался бы результат прошлого запроса.
     queryKey: [...queryKeys.tasks(userId, projectId ?? 0), filters],
     enabled: projectId !== null,
-    queryFn: async (): Promise<Task[]> =>
-      (
-        await api.get('/tasks', {
-          params: {
-            project_id: projectId,
-            q: filters.q || undefined,
-            tag_id: filters.tagIds?.length ? filters.tagIds : undefined,
-            category_id: filters.categoryId ?? undefined,
-            completed: filters.completed ?? undefined,
-          },
-        })
-      ).data,
+    queryFn: async (): Promise<Task[]> => {
+      const params: TaskListQuery = {
+        project_id: projectId ?? 0,
+        q: filters.q || undefined,
+        tag_id: filters.tagIds?.length ? filters.tagIds : undefined,
+        category_id: filters.categoryId ?? undefined,
+        completed: filters.completed ?? undefined,
+      };
+      return (await api.get<Task[]>('/tasks', { params })).data;
+    },
   });
 }
 
@@ -81,14 +86,14 @@ export function useSearch(userId: number, query: string) {
     queryKey: queryKeys.search(userId, query),
     enabled: query.trim().length > 1,
     queryFn: async (): Promise<Task[]> =>
-      (await api.get('/tasks/search', { params: { q: query } })).data,
+      (await api.get<Task[]>('/tasks/search', { params: { q: query } })).data,
   });
 }
 
 export function useTags(userId: number) {
   return useQuery({
     queryKey: queryKeys.tags(userId),
-    queryFn: async (): Promise<Tag[]> => (await api.get('/tags')).data,
+    queryFn: async (): Promise<Tag[]> => (await api.get<Tag[]>('/tags')).data,
     staleTime: 60_000,
   });
 }
@@ -96,7 +101,7 @@ export function useTags(userId: number) {
 export function useCategories(userId: number) {
   return useQuery({
     queryKey: queryKeys.categories(userId),
-    queryFn: async (): Promise<Category[]> => (await api.get('/categories')).data,
+    queryFn: async (): Promise<Category[]> => (await api.get<Category[]>('/categories')).data,
     staleTime: 60_000,
   });
 }
@@ -104,7 +109,8 @@ export function useCategories(userId: number) {
 export function useAttributeMeta() {
   return useQuery({
     queryKey: queryKeys.attributes,
-    queryFn: async (): Promise<MetaField[]> => (await api.get('/task-attributes')).data,
+    queryFn: async (): Promise<MetaField[]> =>
+      (await api.get<MetaField[]>('/task-attributes')).data,
     staleTime: 5 * 60_000,
   });
 }
@@ -113,7 +119,7 @@ export function useAnalytics(userId: number, days: number) {
   return useQuery({
     queryKey: queryKeys.analytics(userId, days),
     queryFn: async (): Promise<Analytics> =>
-      (await api.get('/analytics/summary', { params: { days } })).data,
+      (await api.get<Analytics>('/analytics/summary', { params: { days } })).data,
   });
 }
 
@@ -121,22 +127,22 @@ export function useNotificationPrefs(userId: number) {
   return useQuery({
     queryKey: queryKeys.notifications(userId),
     queryFn: async (): Promise<NotificationPrefs> =>
-      (await api.get('/notifications/settings')).data,
+      (await api.get<NotificationPrefs>('/notifications/settings')).data,
   });
 }
 
 export async function fetchCurrentUser(): Promise<CurrentUser> {
-  return (await api.get('/user/me')).data;
+  return (await api.get<CurrentUser>('/user/me')).data;
 }
 
 export async function uploadImage(file: File): Promise<Attachment> {
   const form = new FormData();
   form.append('file', file);
-  return (await api.post('/files', form)).data;
+  return (await api.post<Attachment>('/files', form)).data;
 }
 
 export async function assist(action: AssistAction, text: string): Promise<AssistResult> {
-  return (await api.post('/ai/assist', { action, text })).data;
+  return (await api.post<AssistResult>('/ai/assist', { action, text })).data;
 }
 
 // --- Мутации -------------------------------------------------------------
@@ -151,7 +157,7 @@ export function useCreateProject(userId: number) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (title: string): Promise<Project> =>
-      (await api.post('/projects', { title })).data,
+      (await api.post<Project>('/projects', { title })).data,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects(userId) });
     },
@@ -161,8 +167,11 @@ export function useCreateProject(userId: number) {
 export function useCreateTask(userId: number, projectId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: Record<string, unknown>): Promise<Task> =>
-      (await api.post('/tasks', { project_id: projectId, ...input })).data,
+    // project_id задаёт сам хук: он известен из выбранной доски.
+    mutationFn: async (input: Omit<TaskCreateInput, 'project_id'>): Promise<Task> => {
+      const body: TaskCreateInput = { ...input, project_id: projectId };
+      return (await api.post<Task>('/tasks', body)).data;
+    },
     onSuccess: () => invalidateBoard(queryClient, userId),
   });
 }
@@ -170,8 +179,8 @@ export function useCreateTask(userId: number, projectId: number) {
 export function useUpdateTask(userId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { id: number; patch: Record<string, unknown> }): Promise<Task> =>
-      (await api.patch(`/tasks/${input.id}`, input.patch)).data,
+    mutationFn: async (input: { id: number; patch: TaskUpdateInput }): Promise<Task> =>
+      (await api.patch<Task>(`/tasks/${input.id}`, input.patch)).data,
     onSuccess: () => invalidateBoard(queryClient, userId),
   });
 }
@@ -179,14 +188,9 @@ export function useUpdateTask(userId: number) {
 export function useMoveTask(userId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: {
-      id: number;
-      column_id: number | null;
-      before_id?: number | null;
-      after_id?: number | null;
-    }): Promise<Task> => {
+    mutationFn: async (input: TaskMoveInput & { id: number }): Promise<Task> => {
       const { id, ...body } = input;
-      return (await api.post(`/tasks/${id}/move`, body)).data;
+      return (await api.post<Task>(`/tasks/${id}/move`, body satisfies TaskMoveInput)).data;
     },
     onSuccess: () => invalidateBoard(queryClient, userId),
   });
@@ -205,7 +209,7 @@ export function useDeleteTask(userId: number) {
 export function useCreateTag(userId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (name: string): Promise<Tag> => (await api.post('/tags', { name })).data,
+    mutationFn: async (name: string): Promise<Tag> => (await api.post<Tag>('/tags', { name })).data,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.tags(userId) });
     },
@@ -216,7 +220,7 @@ export function useCreateCategory(userId: number) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (name: string): Promise<Category> =>
-      (await api.post('/categories', { name })).data,
+      (await api.post<Category>('/categories', { name })).data,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.categories(userId) });
     },
@@ -227,7 +231,7 @@ export function useCreateColumn(userId: number, projectId: number) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (title: string): Promise<BoardColumn> =>
-      (await api.post('/board/columns', { project_id: projectId, title })).data,
+      (await api.post<BoardColumn>('/board/columns', { project_id: projectId, title })).data,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.columns(userId, projectId) });
     },
@@ -237,8 +241,13 @@ export function useCreateColumn(userId: number, projectId: number) {
 export function useUpdateColumn(userId: number, projectId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { id: number; patch: Record<string, unknown> }) =>
-      (await api.patch(`/board/columns/${input.id}`, input.patch)).data as BoardColumn,
+    // Утверждение as BoardColumn проверку не выполняло, а подавляло: тип
+    // задаётся параметром запроса, а тело — схемой контракта.
+    mutationFn: async (input: {
+      id: number;
+      patch: BoardColumnUpdateInput;
+    }): Promise<BoardColumn> =>
+      (await api.patch<BoardColumn>(`/board/columns/${input.id}`, input.patch)).data,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.columns(userId, projectId) });
     },
@@ -249,7 +258,7 @@ export function useSaveNotificationPrefs(userId: number) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (prefs: NotificationPrefs): Promise<NotificationPrefs> =>
-      (await api.put('/notifications/settings', prefs)).data,
+      (await api.put<NotificationPrefs>('/notifications/settings', prefs)).data,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.notifications(userId) });
     },

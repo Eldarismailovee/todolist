@@ -1,6 +1,8 @@
 import axios from 'axios';
 import { z } from 'zod';
 
+import type { OtpChallenge } from '../api/types';
+
 /**
  * Обновление cookie идёт через отдельный instance без auth-interceptor:
  * иначе перехватчик вызвал бы сам себя.
@@ -53,11 +55,8 @@ export async function withAuthLock<T>(operation: () => Promise<T>): Promise<T> {
   return navigator.locks.request(AUTH_LOCK, operation);
 }
 
-export interface OtpChallenge {
-  otp_required: true;
-  purpose: 'login' | 'register';
-  expires_in: number;
-}
+// Тип ответа берётся из контракта: ручная копия расходится с ним молча.
+export type { OtpChallenge } from '../api/types';
 
 /**
  * Пароль сам по себе сессию не создаёт: сервер отвечает 202 и присылает код
