@@ -1,7 +1,7 @@
 import { AxiosError, AxiosHeaders } from 'axios';
 import { describe, expect, it } from 'vitest';
 
-import { AuthenticationRequired, describeError, fieldErrors } from './http';
+import { api, AuthenticationRequired, describeError, fieldErrors } from './http';
 
 function axiosError(status: number, data: unknown): AxiosError {
   const error = new AxiosError('request failed');
@@ -43,6 +43,23 @@ describe('describeError', () => {
 
   it('передаёт сообщение обычной ошибки', () => {
     expect(describeError(new AuthenticationRequired('Сессия завершена'))).toBe('Сессия завершена');
+  });
+});
+
+describe('сериализация параметров запроса', () => {
+  it('повторяет параметр для каждого значения массива', () => {
+    // Контракт FastAPI: tag_id=1&tag_id=2. Скобочная форма tag_id[] в схеме
+    // не объявлена, сервер её игнорирует и фильтр по тегам не применяется.
+    const uri = api.getUri({ url: '/tasks', params: { project_id: 7, tag_id: [1, 2] } });
+
+    expect(uri).toBe('/api/v1/tasks?project_id=7&tag_id=1&tag_id=2');
+    expect(uri).not.toContain('%5B%5D');
+  });
+
+  it('не добавляет пустые параметры', () => {
+    expect(api.getUri({ url: '/tasks', params: { project_id: 7, q: undefined } })).toBe(
+      '/api/v1/tasks?project_id=7',
+    );
   });
 });
 

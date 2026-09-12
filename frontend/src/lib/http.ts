@@ -106,7 +106,16 @@ export async function logout(): Promise<void> {
   });
 }
 
-export const api = axios.create({ baseURL: '/api/v1', timeout: 15_000 });
+export const api = axios.create({
+  baseURL: '/api/v1',
+  timeout: 15_000,
+  /**
+   * FastAPI объявляет списочные параметры как повторяющиеся: tag_id=1&tag_id=2.
+   * По умолчанию axios сериализует массив как tag_id[]=1&tag_id[]=2, а такого
+   * параметра в схеме нет — сервер молча игнорирует его, и фильтр не работает.
+   */
+  paramsSerializer: { indexes: null },
+});
 
 // Новый токен перед каждым защищённым запросом; в axios.defaults он не остаётся.
 api.interceptors.request.use(async (config) => {
