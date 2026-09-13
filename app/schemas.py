@@ -23,6 +23,7 @@ from pydantic import (
     StringConstraints,
     create_model,
     field_validator,
+    model_validator,
 )
 
 from .config import get_settings
@@ -76,6 +77,21 @@ class OtpChallengeResponse(BaseModel):
     expires_in: int
 
 
+class DeleteCodeChallengeResponse(BaseModel):
+    """Код подтверждения удаления аккаунта отправлен.
+
+    Отдельный тип, а не расширение OtpChallengeResponse: цель этого кода не
+    входит в допустимые значения /auth/otp/verify, и контракт входа не должен
+    объявлять её как возможный ответ.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    otp_required: Literal[True] = True
+    purpose: Literal["delete_account"] = "delete_account"
+    expires_in: int
+
+
 class OtpVerifyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -114,7 +130,9 @@ class CurrentUserResponse(BaseModel):
     is_admin: bool
     display_name: str | None = None
     avatar_url: str | None = None
-    has_password: bool = True
+    # Значения по умолчанию у этого поля быть не должно: оно вычисляется из
+    # модели, а умолчание скрывало отсутствие свойства.
+    has_password: bool
     created_at: datetime
 
 
@@ -126,11 +144,29 @@ class ChangePasswordRequest(BaseModel):
 
 
 class DeleteAccountRequest(BaseModel):
-    """Повторное подтверждение личности для чувствительной операции."""
+    """Повторное подтверждение личности для чувствительной операции.
+
+    Пароль есть не у всех: аккаунт, созданный через OAuth, иначе невозможно
+    удалить вовсе. Для него подтверждением служит одноразовый код на
+    подтверждённый адрес, запрошенный отдельно и привязанный к этому действию.
+    Пропускать проверку для OAuth-аккаунтов нельзя: удаление данных должно
+    требовать свежего подтверждения личности.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    password: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=512)]
+    password: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=512)] = Field(
+        default=None
+    )
+    code: Annotated[str, StringConstraints(strict=True, min_length=4, max_length=12)] = Field(
+        default=None
+    )
+
+    @model_validator(mode="after")
+    def exactly_one_proof(self) -> "DeleteAccountRequest":
+        if (self.password is None) == (self.code is None):
+            raise ValueError("Нужен ровно один способ подтверждения: password или code")
+        return self
 
 
 # --- Проекты -------------------------------------------------------------

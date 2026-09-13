@@ -43,6 +43,12 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    @property
+    def has_password(self) -> bool:
+        """Свойства не было, и CurrentUserResponse брал значение по умолчанию:
+        аккаунт без пароля сериализовался как has_password=true."""
+        return self.hashed_password is not None
+
 
 class OAuthAccount(Base):
     """Связь внешнего аккаунта с локальным пользователем."""

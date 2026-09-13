@@ -6,10 +6,11 @@
 """
 
 import hmac
+import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +18,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .config import Settings
 from .models import OtpCode
 
-Purpose = Literal["login", "register"]
+logger = logging.getLogger(__name__)
+
+# delete_account — подтверждение чувствительного действия, а не входа: код
+# этой цели не принимается на /auth/otp/verify и сессии не создаёт.
+Purpose = Literal["login", "register", "delete_account"]
+
+ACTIONS: dict[str, str] = {
+    "login": "входа",
+    "register": "регистрации",
+    "delete_account": "удаления аккаунта",
+}
 
 
 def generate_code(settings: Settings) -> str:
@@ -109,13 +120,47 @@ async def consume_code(
     return record
 
 
+async def send_code(
+    db: AsyncSession,
+    settings: Settings,
+    mailer: Any,
+    redis: Any,
+    email: str,
+    purpose: Purpose,
+    password_hash: str | None = None,
+) -> None:
+    """Выпустить код и отправить письмо.
+
+    Живёт здесь, а не в роутере входа: подтверждение по почте нужно и удалению
+    аккаунта, а импортировать приватную функцию чужого роутера — худший из
+    вариантов.
+    """
+    code = await issue_code(db, settings, email, purpose, pending_password_hash=password_hash)
+    await db.commit()
+    subject, body = format_message(code, purpose, settings.otp_ttl_seconds)
+    await mailer.send(email, subject, body)
+    if settings.otp_log_codes:
+        # Только для локальной разработки: в production код в логах недопустим.
+        logger.warning("OTP для %s (%s): %s", email, purpose, code)
+    if settings.enable_testing_endpoints:
+        # Тот же выключатель, что и у служебного роутера: без него код нигде
+        # в открытом виде не сохраняется.
+        from .routers.testing import testing_otp_key
+
+        await redis.set(
+            testing_otp_key(settings.key_prefix, email, purpose),
+            code,
+            ex=settings.otp_ttl_seconds,
+        )
+
+
 def format_message(code: str, purpose: Purpose, ttl_seconds: int) -> tuple[str, str]:
     """Тема письма без кода: она попадает в заголовки, уведомления и логи почты.
 
     Код остаётся только в теле — иначе OTP_LOG_CODES=false ничего не защищает,
     потому что заглушка-мейлер и SMTP-серверы пишут тему целиком.
     """
-    action = "входа" if purpose == "login" else "регистрации"
+    action = ACTIONS[purpose]
     minutes = max(1, ttl_seconds // 60)
     subject = f"Код подтверждения {action} в Todo App"
     body = (

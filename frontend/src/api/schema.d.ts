@@ -574,7 +574,7 @@ export interface paths {
     post?: never;
     /**
      * Delete Account
-     * @description Удаление аккаунта: подтверждение пароля, отзыв сессий, каскадное удаление.
+     * @description Удаление аккаунта: подтверждение личности, отзыв сессий, каскад.
      *
      *     Обработку резервных копий и журналов нужно согласовать с политикой хранения:
      *     один DELETE из `users` не реализует весь процесс.
@@ -596,9 +596,15 @@ export interface paths {
      * Export User Data
      * @description Синхронный экспорт небольшого объёма.
      *
-     *     Связь `Project.tasks` загружается явно через selectinload: при lazy="raise"
-     *     обращение к `p.tasks` иначе подняло бы исключение, а не скрытый SQL.
-     *     Хеши паролей и действующие токены в экспорт не попадают.
+     *     Связи загружаются явно через selectinload: при lazy="raise" обращение к
+     *     `p.tasks` иначе подняло бы исключение, а не скрытый SQL. Хеши паролей и
+     *     действующие токены в экспорт не попадают.
+     *
+     *     Выгрузка должна позволять восстановить список дел: раньше в неё попадали
+     *     только id, атрибуты и отметки времени задачи, то есть ни заголовка, ни
+     *     текста, ни срока в ней не было. Ссылки на вложения не подписываются —
+     *     подпись живёт час, а выгрузка хранится долго; вместо неё идёт перечень
+     *     файлов с постоянными идентификаторами.
      */
     get: operations['export_user_data_api_v1_user_export_data_get'];
     put?: never;
@@ -624,6 +630,31 @@ export interface paths {
      *     SSE-потоки перестают давать доступ, требуется повторный вход.
      */
     post: operations['change_password_api_v1_user_change_password_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/user/delete-code': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Request Delete Code
+     * @description Код подтверждения удаления аккаунта на адрес владельца.
+     *
+     *     Нужен аккаунтам без пароля: у входа через OAuth подтверждать нечего, а
+     *     удаление данных обязано требовать свежего подтверждения личности. Код
+     *     привязан к действию: цель `delete_account` не принимается на
+     *     /auth/otp/verify и сессию не создаёт.
+     */
+    post: operations['request_delete_code_api_v1_user_delete_code_post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -822,10 +853,7 @@ export interface components {
       display_name?: string | null;
       /** Avatar Url */
       avatar_url?: string | null;
-      /**
-       * Has Password
-       * @default true
-       */
+      /** Has Password */
       has_password: boolean;
       /**
        * Created At
@@ -836,10 +864,42 @@ export interface components {
     /**
      * DeleteAccountRequest
      * @description Повторное подтверждение личности для чувствительной операции.
+     *
+     *     Пароль есть не у всех: аккаунт, созданный через OAuth, иначе невозможно
+     *     удалить вовсе. Для него подтверждением служит одноразовый код на
+     *     подтверждённый адрес, запрошенный отдельно и привязанный к этому действию.
+     *     Пропускать проверку для OAuth-аккаунтов нельзя: удаление данных должно
+     *     требовать свежего подтверждения личности.
      */
     DeleteAccountRequest: {
       /** Password */
-      password: string;
+      password?: string;
+      /** Code */
+      code?: string;
+    };
+    /**
+     * DeleteCodeChallengeResponse
+     * @description Код подтверждения удаления аккаунта отправлен.
+     *
+     *     Отдельный тип, а не расширение OtpChallengeResponse: цель этого кода не
+     *     входит в допустимые значения /auth/otp/verify, и контракт входа не должен
+     *     объявлять её как возможный ответ.
+     */
+    DeleteCodeChallengeResponse: {
+      /**
+       * Otp Required
+       * @default true
+       * @constant
+       */
+      otp_required: true;
+      /**
+       * Purpose
+       * @default delete_account
+       * @constant
+       */
+      purpose: 'delete_account';
+      /** Expires In */
+      expires_in: number;
     };
     /** HTTPValidationError */
     HTTPValidationError: {
@@ -2421,6 +2481,26 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  request_delete_code_api_v1_user_delete_code_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['DeleteCodeChallengeResponse'];
         };
       };
     };

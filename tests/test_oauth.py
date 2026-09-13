@@ -17,7 +17,7 @@ from app.cookies import oauth_state_cookie_name, refresh_cookie_name
 from app.db import SessionLocal
 from app.models import OAuthAccount, User
 
-from .conftest import bearer, register
+from .conftest import OTP_CODE, bearer, fresh_access, plant_otp, register
 
 settings = get_settings()
 COOKIE = refresh_cookie_name(settings)
@@ -350,3 +350,100 @@ async def test_session_from_oauth_works_for_api(oauth_client):
     me = await oauth_client.get("/api/v1/user/me", headers=bearer(refreshed.json()["access_token"]))
     assert me.status_code == 200
     assert me.json()["email"] == "gh-api@example.com"
+
+
+async def _sign_in_with_github(oauth_client, account_id: str, email: str) -> None:
+    STATE["id"] = account_id
+    STATE["email"] = email
+    state = await _authorize(oauth_client)
+    callback = await oauth_client.get(
+        f"/api/v1/auth/oauth/github/callback?code=good-code&state={state}"
+    )
+    assert callback.status_code == 303
+
+
+async def test_oauth_account_reports_that_it_has_no_password(oauth_client):
+    """has_password брался из значения по умолчанию и всегда был true."""
+    await _sign_in_with_github(oauth_client, "gh-nopass", "gh-nopass@example.com")
+
+    me = await oauth_client.get("/api/v1/user/me", headers=bearer(await fresh_access(oauth_client)))
+
+    assert me.status_code == 200
+    assert me.json()["has_password"] is False
+
+
+async def test_oauth_account_is_deleted_after_email_confirmation(oauth_client):
+    """Пароля у такого аккаунта нет, и удалить его иначе было невозможно."""
+    email = "gh-delete@example.com"
+    await _sign_in_with_github(oauth_client, "gh-delete", email)
+
+    # Пароль подтверждением быть не может: его просто нет.
+    refused = await oauth_client.request(
+        "DELETE",
+        "/api/v1/user/me",
+        json={"password": "любой-пароль"},
+        headers=bearer(await fresh_access(oauth_client)),
+    )
+    assert refused.status_code == 403
+
+    requested = await oauth_client.post(
+        "/api/v1/user/delete-code", headers=bearer(await fresh_access(oauth_client))
+    )
+    assert requested.status_code == 202, requested.text
+    assert requested.json()["purpose"] == "delete_account"
+    await plant_otp(email, "delete_account")
+
+    deleted = await oauth_client.request(
+        "DELETE",
+        "/api/v1/user/me",
+        json={"code": OTP_CODE},
+        headers=bearer(await fresh_access(oauth_client)),
+    )
+
+    assert deleted.status_code == 204, deleted.text
+    async with SessionLocal() as session:
+        assert await session.scalar(select(User).where(User.email == email)) is None
+
+
+async def test_delete_code_is_not_accepted_as_a_login(oauth_client):
+    """Код привязан к действию: сессию по нему получить нельзя."""
+    email = "gh-actionbound@example.com"
+    await _sign_in_with_github(oauth_client, "gh-actionbound", email)
+    await oauth_client.post(
+        "/api/v1/user/delete-code", headers=bearer(await fresh_access(oauth_client))
+    )
+    await plant_otp(email, "delete_account")
+
+    # Цель delete_account не входит в допустимые значения /auth/otp/verify.
+    response = await oauth_client.post(
+        "/api/v1/auth/otp/verify",
+        json={"email": email, "code": OTP_CODE, "purpose": "delete_account"},
+    )
+    assert response.status_code == 422
+
+    # Тем же кодом нельзя войти и под видом обычного входа.
+    as_login = await oauth_client.post(
+        "/api/v1/auth/otp/verify",
+        json={"email": email, "code": OTP_CODE, "purpose": "login"},
+    )
+    assert as_login.status_code == 401
+
+
+async def test_wrong_delete_code_does_not_delete_the_account(oauth_client):
+    email = "gh-badcode@example.com"
+    await _sign_in_with_github(oauth_client, "gh-badcode", email)
+    await oauth_client.post(
+        "/api/v1/user/delete-code", headers=bearer(await fresh_access(oauth_client))
+    )
+    await plant_otp(email, "delete_account")
+
+    response = await oauth_client.request(
+        "DELETE",
+        "/api/v1/user/me",
+        json={"code": "000000"},
+        headers=bearer(await fresh_access(oauth_client)),
+    )
+
+    assert response.status_code == 403
+    async with SessionLocal() as session:
+        assert await session.scalar(select(User).where(User.email == email)) is not None

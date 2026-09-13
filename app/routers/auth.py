@@ -16,7 +16,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit, auth_service, oauth, otp
 from ..config import Settings
@@ -29,7 +28,6 @@ from ..cookies import (
     set_refresh_cookie,
 )
 from ..dependencies import Db, MailerDep, RedisDep, SettingsDep
-from ..integrations.mail import Mailer
 from ..models import OAuthAccount, User
 from ..schemas import (
     AccessTokenResponse,
@@ -71,34 +69,6 @@ def _token_response(
     }
 
 
-async def _send_code(
-    db: AsyncSession,
-    settings: Settings,
-    mailer: Mailer,
-    redis,
-    email: str,
-    purpose: str,
-    password_hash: str | None = None,
-) -> None:
-    code = await otp.issue_code(db, settings, email, purpose, pending_password_hash=password_hash)
-    await db.commit()
-    subject, body = otp.format_message(code, purpose, settings.otp_ttl_seconds)
-    await mailer.send(email, subject, body)
-    if settings.otp_log_codes:
-        # Только для локальной разработки: в production код в логах недопустим.
-        logger.warning("OTP для %s (%s): %s", email, purpose, code)
-    if settings.enable_testing_endpoints:
-        # Тот же выключатель, что и у служебного роутера: без него код нигде
-        # в открытом виде не сохраняется.
-        from .testing import testing_otp_key
-
-        await redis.set(
-            testing_otp_key(settings.key_prefix, email, purpose),
-            code,
-            ex=settings.otp_ttl_seconds,
-        )
-
-
 @router.post("/register", status_code=status.HTTP_202_ACCEPTED, response_model=OtpChallengeResponse)
 async def register(
     payload: RegisterRequest,
@@ -132,7 +102,7 @@ async def register(
     if await db.scalar(select(User.id).where(User.email == email)):
         raise HTTPException(status.HTTP_409_CONFLICT, "Email уже зарегистрирован")
 
-    await _send_code(
+    await otp.send_code(
         db,
         settings,
         mailer,
@@ -186,7 +156,7 @@ async def login(
             status.HTTP_401_UNAUTHORIZED, "Неверный email или пароль", headers=NO_STORE
         )
 
-    await _send_code(db, settings, mailer, redis, email, "login")
+    await otp.send_code(db, settings, mailer, redis, email, "login")
     return {"otp_required": True, "purpose": "login", "expires_in": settings.otp_ttl_seconds}
 
 

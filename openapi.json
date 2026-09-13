@@ -1938,7 +1938,7 @@
           "user"
         ],
         "summary": "Delete Account",
-        "description": "Удаление аккаунта: подтверждение пароля, отзыв сессий, каскадное удаление.\n\nОбработку резервных копий и журналов нужно согласовать с политикой хранения:\nодин DELETE из `users` не реализует весь процесс.",
+        "description": "Удаление аккаунта: подтверждение личности, отзыв сессий, каскад.\n\nОбработку резервных копий и журналов нужно согласовать с политикой хранения:\nодин DELETE из `users` не реализует весь процесс.",
         "operationId": "delete_account_api_v1_user_me_delete",
         "requestBody": {
           "content": {
@@ -1978,7 +1978,7 @@
           "user"
         ],
         "summary": "Export User Data",
-        "description": "Синхронный экспорт небольшого объёма.\n\nСвязь `Project.tasks` загружается явно через selectinload: при lazy=\"raise\"\nобращение к `p.tasks` иначе подняло бы исключение, а не скрытый SQL.\nХеши паролей и действующие токены в экспорт не попадают.",
+        "description": "Синхронный экспорт небольшого объёма.\n\nСвязи загружаются явно через selectinload: при lazy=\"raise\" обращение к\n`p.tasks` иначе подняло бы исключение, а не скрытый SQL. Хеши паролей и\nдействующие токены в экспорт не попадают.\n\nВыгрузка должна позволять восстановить список дел: раньше в неё попадали\nтолько id, атрибуты и отметки времени задачи, то есть ни заголовка, ни\nтекста, ни срока в ней не было. Ссылки на вложения не подписываются —\nподпись живёт час, а выгрузка хранится долго; вместо неё идёт перечень\nфайлов с постоянными идентификаторами.",
         "operationId": "export_user_data_api_v1_user_export_data_get",
         "responses": {
           "200": {
@@ -2025,6 +2025,33 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/user/delete-code": {
+      "post": {
+        "tags": [
+          "user"
+        ],
+        "summary": "Request Delete Code",
+        "description": "Код подтверждения удаления аккаунта на адрес владельца.\n\nНужен аккаунтам без пароля: у входа через OAuth подтверждать нечего, а\nудаление данных обязано требовать свежего подтверждения личности. Код\nпривязан к действию: цель `delete_account` не принимается на\n/auth/otp/verify и сессию не создаёт.",
+        "operationId": "request_delete_code_api_v1_user_delete_code_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteCodeChallengeResponse"
                 }
               }
             }
@@ -2536,8 +2563,7 @@
           },
           "has_password": {
             "type": "boolean",
-            "title": "Has Password",
-            "default": true
+            "title": "Has Password"
           },
           "created_at": {
             "type": "string",
@@ -2550,6 +2576,7 @@
           "id",
           "email",
           "is_admin",
+          "has_password",
           "created_at"
         ],
         "title": "CurrentUserResponse"
@@ -2561,15 +2588,45 @@
             "maxLength": 512,
             "minLength": 1,
             "title": "Password"
+          },
+          "code": {
+            "type": "string",
+            "maxLength": 12,
+            "minLength": 4,
+            "title": "Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DeleteAccountRequest",
+        "description": "Повторное подтверждение личности для чувствительной операции.\n\nПароль есть не у всех: аккаунт, созданный через OAuth, иначе невозможно\nудалить вовсе. Для него подтверждением служит одноразовый код на\nподтверждённый адрес, запрошенный отдельно и привязанный к этому действию.\nПропускать проверку для OAuth-аккаунтов нельзя: удаление данных должно\nтребовать свежего подтверждения личности."
+      },
+      "DeleteCodeChallengeResponse": {
+        "properties": {
+          "otp_required": {
+            "type": "boolean",
+            "const": true,
+            "title": "Otp Required",
+            "default": true
+          },
+          "purpose": {
+            "type": "string",
+            "const": "delete_account",
+            "title": "Purpose",
+            "default": "delete_account"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "password"
+          "expires_in"
         ],
-        "title": "DeleteAccountRequest",
-        "description": "Повторное подтверждение личности для чувствительной операции."
+        "title": "DeleteCodeChallengeResponse",
+        "description": "Код подтверждения удаления аккаунта отправлен.\n\nОтдельный тип, а не расширение OtpChallengeResponse: цель этого кода не\nвходит в допустимые значения /auth/otp/verify, и контракт входа не должен\nобъявлять её как возможный ответ."
       },
       "HTTPValidationError": {
         "properties": {
