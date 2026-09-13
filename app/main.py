@@ -4,8 +4,10 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm.exc import StaleDataError
 
 from .config import get_settings
 from .db import engine
@@ -105,6 +107,20 @@ if settings.enable_testing_endpoints:
     api.include_router(testing.router)
 
 app.include_router(api)
+
+
+@app.exception_handler(StaleDataError)
+async def handle_stale_data(request: Request, exc: StaleDataError) -> JSONResponse:
+    """Условная запись не нашла строку ожидаемой версии.
+
+    Значит, между чтением и записью её изменил другой запрос. Это конфликт
+    состояния, а не сбой сервера: клиент должен перечитать задачу и повторить.
+    """
+    logger.info("Конфликт версий при записи: %s", exc)
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": "Задача изменена другим запросом, обновите её и повторите"},
+    )
 
 
 @app.get("/healthz", include_in_schema=False)

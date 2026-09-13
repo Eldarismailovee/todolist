@@ -179,8 +179,21 @@ export function useCreateTask(userId: number, projectId: number) {
 export function useUpdateTask(userId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { id: number; patch: TaskUpdateInput }): Promise<Task> =>
-      (await api.patch<Task>(`/tasks/${input.id}`, input.patch)).data,
+    /**
+     * `version` — номер состояния, которое видел пользователь. Сервер отвергает
+     * запись по устаревшему снимку (412), вместо того чтобы затереть правку,
+     * сделанную тем временем в другой вкладке. Без версии проверки нет.
+     */
+    mutationFn: async (input: {
+      id: number;
+      patch: TaskUpdateInput;
+      version?: number;
+    }): Promise<Task> =>
+      (
+        await api.patch<Task>(`/tasks/${input.id}`, input.patch, {
+          headers: input.version === undefined ? {} : { 'If-Match': String(input.version) },
+        })
+      ).data,
     onSuccess: () => invalidateBoard(queryClient, userId),
   });
 }

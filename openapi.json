@@ -521,6 +521,7 @@
           "board"
         ],
         "summary": "List Columns",
+        "description": "Только чтение.\n\nРаньше здесь создавались колонки по умолчанию, и два параллельных запроса\nк пустой доске делали два набора. Набор создаётся при создании проекта,\nа старым проектам он добавлен миграцией.",
         "operationId": "list_columns_api_v1_board_columns_get",
         "security": [
           {
@@ -1042,6 +1043,7 @@
           "tasks"
         ],
         "summary": "Update Task",
+        "description": "Частичное обновление задачи.\n\n`If-Match` с номером версии из последнего прочитанного ответа делает запись\nусловной: правка, сделанная на устаревшем снимке, отвергается вместо того,\nчтобы молча затереть изменение из другой вкладки. Без заголовка проверки\nнет — старые клиенты продолжают работать как прежде.",
         "operationId": "update_task_api_v1_tasks__task_id__patch",
         "security": [
           {
@@ -1056,6 +1058,22 @@
             "schema": {
               "type": "integer",
               "title": "Task Id"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
             }
           }
         ],
@@ -3273,6 +3291,10 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
           }
         },
         "type": "object",
@@ -3289,7 +3311,8 @@
           "completed_at",
           "attributes",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "version"
         ],
         "title": "TaskResponse"
       },

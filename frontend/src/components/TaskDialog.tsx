@@ -88,6 +88,9 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
     try {
       await update.mutateAsync({
         id: task.id,
+        // Версия того состояния, которое сейчас открыто в диалоге: правка
+        // поверх более нового изменения будет отвергнута, а не применена.
+        version: task.version,
         patch: {
           title: title.trim() || task.title,
           description: description.trim() || null,

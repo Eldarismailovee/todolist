@@ -17,6 +17,12 @@ from sqlalchemy.orm import selectinload
 from .. import events, idempotency, ordering
 from ..attachments import check_attachments, owned_attachments, sign_content, strip_signatures
 from ..attributes import load_metadata, validate_or_422
+from ..board_service import (
+    apply_column_change,
+    check_neighbour_order,
+    check_neighbours,
+    lock_project_board,
+)
 from ..config import Settings
 from ..content import ContentError, extract_text, validate_document
 from ..dependencies import CurrentPrincipal, Db, RedisDep, SettingsDep
@@ -83,6 +89,26 @@ async def _resolve_tags(db: AsyncSession, tag_ids: list[int], user_id: int) -> l
         # Чужой тег не должен молча исчезать из запроса.
         raise field_error(["tag_ids"], "Тег не найден")
     return list(tags)
+
+
+def _check_if_match(if_match: str | None, version: int) -> None:
+    """Условная запись по номеру версии задачи.
+
+    Значение сравнивается как есть и в виде ETag в кавычках: клиент вправе
+    прислать заголовок в стандартной форме. Несовпадение — 412, а не 409:
+    предусловие запроса не выполнено, само состояние задачи корректно.
+    """
+    if if_match is None:
+        return
+    presented = if_match.strip()
+    if presented.startswith("W/"):
+        presented = presented[2:]
+    presented = presented.strip('"')
+    if presented != str(version):
+        raise HTTPException(
+            status.HTTP_412_PRECONDITION_FAILED,
+            f"Задача изменена в другом месте: текущая версия {version}",
+        )
 
 
 def _content_text(content: dict | None) -> str | None:
@@ -284,6 +310,9 @@ async def create_task(
         attributes = validate_or_422(payload.attributes, metadata)
 
         owner_id = project.owner_id
+        # Позиция считается по максимуму в колонке: без блокировки две
+        # одновременные вставки получили бы одно значение.
+        await lock_project_board(db, project.id)
         task = Task(
             project_id=project.id,
             column_id=column.id if column else None,
@@ -332,8 +361,17 @@ async def update_task(
     db: Db,
     redis: RedisDep,
     settings: SettingsDep,
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ):
+    """Частичное обновление задачи.
+
+    `If-Match` с номером версии из последнего прочитанного ответа делает запись
+    условной: правка, сделанная на устаревшем снимке, отвергается вместо того,
+    чтобы молча затереть изменение из другой вкладки. Без заголовка проверки
+    нет — старые клиенты продолжают работать как прежде.
+    """
     task, owner_id = await _owned_task(db, task_id, principal.user_id)
+    _check_if_match(if_match, task.version)
     # exclude_unset: пропущенное поле и явный null — разные намерения.
     fields = payload.model_dump(exclude_unset=True)
 
@@ -354,9 +392,11 @@ async def update_task(
         task.category_id = fields["category_id"]
     if "column_id" in fields:
         column = await _check_column(db, fields["column_id"], task.project_id)
-        task.column_id = fields["column_id"]
-        if column is not None and column.is_done_column and task.completed_at is None:
-            task.completed_at = datetime.now(UTC)
+        # Одно правило на оба маршрута: раньше PATCH выставлял completed_at при
+        # переносе в «готово», но не снимал его при переносе обратно.
+        apply_column_change(task, column)
+    # Явный признак идёт после колонки: пользователь мог одним запросом
+    # перенести задачу и отметить её выполненной.
     if "completed" in fields:
         task.completed_at = datetime.now(UTC) if fields["completed"] else None
     if "tag_ids" in fields:
@@ -396,6 +436,10 @@ async def move_task(
     task, owner_id = await _owned_task(db, task_id, principal.user_id)
     column = await _check_column(db, payload.column_id, task.project_id)
     target_column_id = payload.column_id
+    check_neighbours(task_id, payload.before_id, payload.after_id)
+    # Соседи читаются, а позиция вычисляется и пишется отдельными запросами:
+    # без общей блокировки два перемещения выберут одно и то же значение.
+    await lock_project_board(db, task.project_id)
 
     async def neighbour_position(neighbour_id: int | None) -> float | None:
         if neighbour_id is None:
@@ -415,9 +459,10 @@ async def move_task(
 
     previous = await neighbour_position(payload.after_id)
     following = await neighbour_position(payload.before_id)
+    check_neighbour_order(previous, following)
     position = ordering.position_between(previous, following)
 
-    task.column_id = target_column_id
+    apply_column_change(task, column)
     if position is None:
         # Зазор между соседями исчерпан: перенумеровываем колонку и повторяем.
         siblings = (
@@ -436,11 +481,6 @@ async def move_task(
         position = ordering.position_between(previous, following) or ordering.STEP
 
     task.position = position
-    if column is not None:
-        # Колонка «готово» и обратно — единственный способ закрыть задачу мышью.
-        task.completed_at = (
-            (task.completed_at or datetime.now(UTC)) if column.is_done_column else None
-        )
 
     await db.flush()
     await db.refresh(task, attribute_names=["updated_at"])

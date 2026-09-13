@@ -204,7 +204,14 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** List Columns */
+    /**
+     * List Columns
+     * @description Только чтение.
+     *
+     *     Раньше здесь создавались колонки по умолчанию, и два параллельных запроса
+     *     к пустой доске делали два набора. Набор создаётся при создании проекта,
+     *     а старым проектам он добавлен миграцией.
+     */
     get: operations['list_columns_api_v1_board_columns_get'];
     put?: never;
     /** Create Column */
@@ -294,7 +301,15 @@ export interface paths {
     delete: operations['delete_task_api_v1_tasks__task_id__delete'];
     options?: never;
     head?: never;
-    /** Update Task */
+    /**
+     * Update Task
+     * @description Частичное обновление задачи.
+     *
+     *     `If-Match` с номером версии из последнего прочитанного ответа делает запись
+     *     условной: правка, сделанная на устаревшем снимке, отвергается вместо того,
+     *     чтобы молча затереть изменение из другой вкладки. Без заголовка проверки
+     *     нет — старые клиенты продолжают работать как прежде.
+     */
     patch: operations['update_task_api_v1_tasks__task_id__patch'];
     trace?: never;
   };
@@ -1144,6 +1159,8 @@ export interface components {
        * Format: date-time
        */
       updated_at: string;
+      /** Version */
+      version: number;
     };
     /**
      * TaskUpdate
@@ -1832,7 +1849,9 @@ export interface operations {
   update_task_api_v1_tasks__task_id__patch: {
     parameters: {
       query?: never;
-      header?: never;
+      header?: {
+        'If-Match'?: string | null;
+      };
       path: {
         task_id: number;
       };

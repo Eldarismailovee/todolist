@@ -324,6 +324,9 @@ class TaskResponse(BaseModel):
     tags: list[TagResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+    # Номер прочитанного состояния: клиент возвращает его в If-Match, чтобы
+    # его правка не затёрла более новое изменение.
+    version: int
 
 
 class BoardColumnCreate(BaseModel):

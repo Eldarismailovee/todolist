@@ -242,10 +242,18 @@ class Task(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+    # Номер версии для условной записи. updated_at для этого не годится:
+    # он выставляется СУБД, у него разрешение времени и он не отличает две
+    # правки внутри одной миллисекунды.
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
 
     project: Mapped["Project"] = relationship(back_populates="tasks", lazy="raise")
     column: Mapped["BoardColumn"] = relationship(back_populates="tasks", lazy="raise")
     tags: Mapped[list["Tag"]] = relationship(secondary="task_tags", lazy="raise")
+
+    # SQLAlchemy сам увеличивает version и добавляет его в WHERE каждого UPDATE:
+    # запись по устаревшему снимку не находит строку и поднимает StaleDataError.
+    __mapper_args__ = {"version_id_col": version}
 
 
 Index("idx_tasks_attributes_gin", Task.attributes, postgresql_using="gin")

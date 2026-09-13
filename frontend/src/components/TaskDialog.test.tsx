@@ -54,6 +54,7 @@ const TASK: Task = {
   tags: [],
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
+  version: 3,
 };
 
 function wrapper({ children }: { children: ReactNode }) {
