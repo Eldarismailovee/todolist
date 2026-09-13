@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from .. import events, idempotency, ordering
-from ..attachments import check_attachments, owned_attachments, sign_content, strip_signatures
+from ..attachments import check_attachments, normalise_paths
 from ..attributes import load_metadata, validate_or_422
 from ..board_service import (
     apply_column_change,
@@ -143,34 +143,18 @@ def _with_tags(statement: Select) -> Select:
 async def _responses(
     db: AsyncSession, settings: Settings, owner_id: int, tasks
 ) -> list[TaskResponse]:
-    """Ответы с подписанными ссылками на картинки.
+    """Ответы как есть.
 
-    В базе хранится «голый» путь: подпись живёт час и не должна попадать
-    в долговременное хранилище. Владелец вложений проверяется одним запросом
-    на всю выдачу — и для документов, сохранённых до этой проверки.
+    Ссылки на картинки — обычные пути `/api/v1/files/{id}`: выдача проверяет
+    владельца по сессии, поэтому подписывать их при каждом чтении не нужно.
     """
-    results = [TaskResponse.model_validate(task) for task in tasks]
-    owned = await owned_attachments(db, owner_id, [result.content for result in results])
-    for result in results:
-        result.content = sign_content(settings, result.content, owned)
-    return results
+    return [TaskResponse.model_validate(task) for task in tasks]
 
 
 async def _response(
     db: AsyncSession, settings: Settings, owner_id: int, task: Task
 ) -> TaskResponse:
     return (await _responses(db, settings, owner_id, [task]))[0]
-
-
-async def _replayed(db: AsyncSession, settings: Settings, owner_id: int, cached: dict) -> dict:
-    """Повтор по Idempotency-Key: подписи выпускаются заново.
-
-    Сохранённые в кэше живут час и к повтору могут истечь; заодно ответ,
-    записанный до проверки владельца, не отдаст чужую подписанную ссылку.
-    """
-    content = strip_signatures(cached.get("content"))
-    owned = await owned_attachments(db, owner_id, [content])
-    return {**cached, "content": sign_content(settings, content, owned)}
 
 
 @router.get("", response_model=list[TaskResponse])
@@ -288,7 +272,9 @@ async def create_task(
     if key is not None:
         replayed = await idempotency.begin(redis, settings, principal.user_id, key, fingerprint)
         if replayed is not None:
-            return await _replayed(db, settings, principal.user_id, replayed)
+            # Ответ отдаётся как записан: он больше не содержит подписей,
+            # которые могли истечь к моменту повтора.
+            return replayed
 
     try:
         project = await _owned_project(db, payload.project_id, principal.user_id)
@@ -319,7 +305,7 @@ async def create_task(
             category_id=payload.category_id,
             title=payload.title,
             description=payload.description,
-            content=strip_signatures(payload.content),
+            content=normalise_paths(payload.content),
             content_text=_content_text(payload.content),
             due_at=payload.due_at,
             completed_at=datetime.now(UTC) if column and column.is_done_column else None,
@@ -383,7 +369,7 @@ async def update_task(
         task.description = fields["description"]
     if "content" in fields:
         await check_attachments(db, principal.user_id, fields["content"])
-        task.content = strip_signatures(fields["content"])
+        task.content = normalise_paths(fields["content"])
         task.content_text = _content_text(fields["content"])
     if "due_at" in fields:
         task.due_at = fields["due_at"]

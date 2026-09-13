@@ -1,23 +1,26 @@
-"""Зависимости FastAPI: Redis, погашение access-токена, проверка сессии."""
+"""Зависимости FastAPI: Redis, внешние сервисы и авторизация по cookie сессии.
+
+Токенов в JavaScript нет: запрос авторизуется cookie, которую браузер отправляет
+сам. Поэтому здесь нет ни разбора заголовка Authorization, ни погашения
+одноразовых значений — только проверка серверного состояния сессии.
+"""
 
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .access_tokens import Principal, Purpose, consume_access_token
 from .config import Settings, get_settings
+from .cookies import session_cookie_name
 from .db import get_async_db
 from .integrations.ai import Assistant
 from .integrations.mail import Mailer
 from .integrations.telegram import TelegramSender
 from .models import User
-from .sessions import assert_session_active, session_is_active
+from .sessions import Principal, authenticate, authenticate_detached
 
-# auto_error=False: отсутствие заголовка должно давать 401, а не 403.
-bearer_scheme = HTTPBearer(auto_error=False)
+UNAUTHENTICATED = HTTPException(status.HTTP_401_UNAUTHORIZED, "Требуется вход")
 
 
 def get_redis(request: Request) -> Redis:
@@ -40,94 +43,57 @@ def get_pubsub_redis(request: Request) -> Redis:
     return request.app.state.redis.pubsub
 
 
-async def _principal_from_header(
-    credentials: HTTPAuthorizationCredentials | None,
-    redis: Redis,
-    settings: Settings,
-    purpose: Purpose,
-) -> Principal:
-    """Токен читается только из заголовка Authorization: query string не источник."""
-    if credentials is None or not credentials.credentials:
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            "Требуется access token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return await consume_access_token(redis, settings, credentials.credentials, purpose)
+def session_token(request: Request, settings: Settings) -> str | None:
+    return request.cookies.get(session_cookie_name(settings))
 
 
-async def get_api_principal(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-    redis: Annotated[Redis, Depends(get_redis)],
+async def get_principal(
+    request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
     db: Annotated[AsyncSession, Depends(get_async_db)],
 ) -> Principal:
-    """Погашает токен назначения `api` и проверяет, что сессия не отозвана."""
-    principal = await _principal_from_header(credentials, redis, settings, "api")
-    if not await assert_session_active(db, principal):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Сессия недействительна")
+    """Владелец действующей сессии. Иначе 401."""
+    principal = await authenticate(db, settings, session_token(request, settings))
+    if principal is None:
+        raise UNAUTHENTICATED
     return principal
 
 
-async def get_external_call_principal(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-    redis: Annotated[Redis, Depends(get_redis)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> Principal:
-    """Как get_api_principal, но без сессии БД на всё время запроса.
-
-    Маршрут, который ждёт внешний сервис, не должен держать SQL-соединение из
-    пула: проверка сессии идёт в собственной короткой сессии и освобождает
-    соединение до внешнего вызова. Тот же приём уже используется для SSE.
-    """
-    principal = await _principal_from_header(credentials, redis, settings, "api")
-    if not await session_is_active(principal):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Сессия недействительна")
-    return principal
-
-
-async def get_sse_principal(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-    redis: Annotated[Redis, Depends(get_redis)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> Principal:
-    """То же для назначения `sse`.
-
-    Сессия проверяется через собственную короткую сессию БД: SSE-ответ не должен
-    удерживать SQL-соединение весь срок потока.
-    """
-    principal = await _principal_from_header(credentials, redis, settings, "sse")
-    if not await session_is_active(principal):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Сессия недействительна")
-    return principal
-
-
-async def get_optional_api_principal(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-    redis: Annotated[Redis, Depends(get_redis)],
+async def get_optional_principal(
+    request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
     db: Annotated[AsyncSession, Depends(get_async_db)],
 ) -> Principal | None:
-    """Как get_api_principal, но отсутствие заголовка — не ошибка.
+    """Как get_principal, но отсутствие сессии — не ошибка.
 
-    Нужен там, где доступ может давать подписанная ссылка: у тега <img> нет
-    возможности отправить заголовок Authorization.
+    Нужен там, где ответ зависит от того, свой ли ресурс, но публичная часть
+    маршрута существует.
     """
-    if credentials is None or not credentials.credentials:
-        return None
-    principal = await consume_access_token(redis, settings, credentials.credentials, "api")
-    if not await assert_session_active(db, principal):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Сессия недействительна")
+    return await authenticate(db, settings, session_token(request, settings))
+
+
+async def get_detached_principal(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Principal:
+    """Проверка сессии в собственной короткой сессии БД.
+
+    Для маршрутов, которые ждут внешний сервис или держат поток открытым:
+    соединение из пула не должно быть занято всё это время.
+    """
+    principal = await authenticate_detached(settings, session_token(request, settings))
+    if principal is None:
+        raise UNAUTHENTICATED
     return principal
 
 
 async def get_current_user(
-    principal: Annotated[Principal, Depends(get_api_principal)],
+    principal: Annotated[Principal, Depends(get_principal)],
     db: Annotated[AsyncSession, Depends(get_async_db)],
 ) -> User:
     user = await db.get(User, principal.user_id)
     if user is None or not user.is_active:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Сессия недействительна")
+        raise UNAUTHENTICATED
     return user
 
 
@@ -137,9 +103,10 @@ async def require_admin(user: Annotated[User, Depends(get_current_user)]) -> Use
     return user
 
 
-CurrentPrincipal = Annotated[Principal, Depends(get_api_principal)]
-ExternalCallPrincipal = Annotated[Principal, Depends(get_external_call_principal)]
-OptionalPrincipal = Annotated[Principal | None, Depends(get_optional_api_principal)]
+CurrentPrincipal = Annotated[Principal, Depends(get_principal)]
+OptionalPrincipal = Annotated[Principal | None, Depends(get_optional_principal)]
+# SSE и внешние вызовы: проверка сессии без удержания SQL-соединения.
+DetachedPrincipal = Annotated[Principal, Depends(get_detached_principal)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 AdminUser = Annotated[User, Depends(require_admin)]
 Db = Annotated[AsyncSession, Depends(get_async_db)]

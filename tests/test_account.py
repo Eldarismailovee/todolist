@@ -6,7 +6,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.models import User
 
-from .conftest import bearer, fresh_access, register
+from .conftest import register
 
 PASSWORD = "correct-horse-battery"
 
@@ -14,7 +14,7 @@ PASSWORD = "correct-horse-battery"
 async def test_password_account_reports_that_it_has_a_password(client):
     await register(client, "with-password@example.com", PASSWORD)
 
-    me = await client.get("/api/v1/user/me", headers=bearer(await fresh_access(client)))
+    me = await client.get("/api/v1/user/me")
 
     assert me.status_code == 200
     assert me.json()["has_password"] is True
@@ -28,7 +28,6 @@ async def test_deleting_a_password_account_requires_the_password(client):
         "DELETE",
         "/api/v1/user/me",
         json={"password": "не тот пароль"},
-        headers=bearer(await fresh_access(client)),
     )
     assert wrong.status_code == 403
 
@@ -36,7 +35,6 @@ async def test_deleting_a_password_account_requires_the_password(client):
         "DELETE",
         "/api/v1/user/me",
         json={"password": PASSWORD},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert right.status_code == 204, right.text
@@ -57,7 +55,6 @@ async def test_password_checks_are_rate_limited_per_user(client):
         response = await client.post(
             "/api/v1/user/change-password",
             json={"current_password": "не тот пароль", "new_password": "длинный-новый-пароль"},
-            headers=bearer(await fresh_access(client)),
         )
         codes.append(response.status_code)
 
@@ -69,14 +66,11 @@ async def test_delete_request_needs_exactly_one_proof(client):
     """Ни пустое подтверждение, ни оба сразу не считаются подтверждением."""
     await register(client, "delete-proof@example.com", PASSWORD)
 
-    empty = await client.request(
-        "DELETE", "/api/v1/user/me", json={}, headers=bearer(await fresh_access(client))
-    )
+    empty = await client.request("DELETE", "/api/v1/user/me", json={})
     both = await client.request(
         "DELETE",
         "/api/v1/user/me",
         json={"password": PASSWORD, "code": "424242"},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert empty.status_code == 422

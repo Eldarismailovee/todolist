@@ -1,23 +1,21 @@
 """Загрузка изображений для редактора и их выдача.
 
 Файл кладётся на диск под случайным именем, в БД остаётся только запись с
-владельцем. Скачивание разрешает либо подписанная ссылка (её ставит сервер в
-содержимое задачи), либо обычный access token — тег `<img>` может использовать
-только первый вариант.
+владельцем. Скачивание авторизуется сессионной cookie: она покрывает весь
+`/api/v1`, и тег `<img>` отправляет её сам.
 """
 
 import logging
 import secrets
 from uuid import UUID
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..attachments import sign_url, verify_signature
 from ..config import Settings
-from ..dependencies import CurrentPrincipal, Db, OptionalPrincipal, SettingsDep
+from ..dependencies import CurrentPrincipal, Db, SettingsDep
 from ..images import matches_declared_type
 from ..models import Attachment
 from ..schemas import AttachmentResponse
@@ -123,8 +121,10 @@ async def upload_file(
 
     result = AttachmentResponse(
         id=str(attachment.id),
-        # Клиент сразу получает подписанную ссылку и вставляет её в редактор.
-        url=sign_url(settings, str(attachment.id)),
+        # Обычный путь: картинку откроет та же сессионная cookie, что и всё
+        # остальное. Подписанная ссылка была предъявительским доступом к файлу
+        # и жила час независимо от сессии.
+        url=f"/api/v1/files/{attachment.id}",
         filename=attachment.filename,
         content_type=attachment.content_type,
         size_bytes=attachment.size_bytes,
@@ -140,19 +140,21 @@ async def upload_file(
 @router.get("/{attachment_id}")
 async def download_file(
     attachment_id: UUID,
-    principal: OptionalPrincipal,
+    principal: CurrentPrincipal,
     db: Db,
     settings: SettingsDep,
-    exp: str = Query(default=""),
-    sig: str = Query(default=""),
 ):
-    """Доступ даёт либо подписанная ссылка, либо access token владельца."""
+    """Файл отдаётся владельцу по сессионной cookie.
+
+    Тег `<img>` отправляет её сам: она HttpOnly и ограничена этим origin,
+    поэтому ссылка на картинку больше не является отдельным предъявительским
+    доступом с собственным сроком жизни.
+    """
     attachment = await db.scalar(select(Attachment).where(Attachment.id == attachment_id))
     if attachment is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Файл не найден")
 
-    signed = bool(sig) and verify_signature(settings, str(attachment_id), exp, sig)
-    if not signed and (principal is None or attachment.owner_id != principal.user_id):
+    if attachment.owner_id != principal.user_id:
         # Для чужого файла ответ такой же, как для отсутствующего.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Файл не найден")
 

@@ -2,14 +2,11 @@
 
 from app.ordering import MIN_GAP, position_between
 
-from .conftest import bearer, create_project, create_task, fresh_access, register
+from .conftest import create_project, create_task, register
 
 
 async def _columns(client, project_id: int) -> list[dict]:
-    response = await client.get(
-        f"/api/v1/board/columns?project_id={project_id}",
-        headers=bearer(await fresh_access(client)),
-    )
+    response = await client.get(f"/api/v1/board/columns?project_id={project_id}")
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -18,7 +15,6 @@ async def _move(client, task_id: int, **payload) -> dict:
     response = await client.post(
         f"/api/v1/tasks/{task_id}/move",
         json=payload,
-        headers=bearer(await fresh_access(client)),
     )
     assert response.status_code == 200, response.text
     return response.json()
@@ -76,10 +72,7 @@ async def test_reordering_inside_column_changes_only_the_moved_task(client):
         client, third["id"], column_id=column_id, after_id=first["id"], before_id=second["id"]
     )
 
-    listing = await client.get(
-        f"/api/v1/tasks?project_id={project_id}&column_id={column_id}",
-        headers=bearer(await fresh_access(client)),
-    )
+    listing = await client.get(f"/api/v1/tasks?project_id={project_id}&column_id={column_id}")
     assert [task["title"] for task in listing.json()] == ["Первая", "Третья", "Вторая"]
 
 
@@ -93,7 +86,6 @@ async def test_move_to_foreign_column_is_rejected(client):
     response = await client.post(
         f"/api/v1/tasks/{task['id']}/move",
         json={"column_id": other_columns[0]["id"]},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == 422
@@ -107,7 +99,6 @@ async def test_columns_can_be_renamed_and_reordered(client):
     renamed = await client.patch(
         f"/api/v1/board/columns/{columns[0]['id']}",
         json={"title": "Бэклог"},
-        headers=bearer(await fresh_access(client)),
     )
     assert renamed.status_code == 200
     assert renamed.json()["title"] == "Бэклог"
@@ -116,7 +107,6 @@ async def test_columns_can_be_renamed_and_reordered(client):
     moved = await client.patch(
         f"/api/v1/board/columns/{columns[0]['id']}",
         json={"after_id": columns[2]["id"]},
-        headers=bearer(await fresh_access(client)),
     )
     assert moved.status_code == 200
     assert [column["title"] for column in await _columns(client, project_id)] == [
@@ -135,14 +125,12 @@ async def test_last_column_cannot_be_deleted(client):
         response = await client.request(
             "DELETE",
             f"/api/v1/board/columns/{column['id']}",
-            headers=bearer(await fresh_access(client)),
         )
         assert response.status_code == 204
 
     last = await client.request(
         "DELETE",
         f"/api/v1/board/columns/{columns[-1]['id']}",
-        headers=bearer(await fresh_access(client)),
     )
     assert last.status_code == 409
 
@@ -156,12 +144,9 @@ async def test_deleting_column_keeps_its_tasks(client):
     await client.request(
         "DELETE",
         f"/api/v1/board/columns/{columns[0]['id']}",
-        headers=bearer(await fresh_access(client)),
     )
 
-    listing = await client.get(
-        f"/api/v1/tasks?project_id={project_id}", headers=bearer(await fresh_access(client))
-    )
+    listing = await client.get(f"/api/v1/tasks?project_id={project_id}")
     tasks = listing.json()
     assert [task["title"] for task in tasks] == ["Уцелевшая"]
     assert tasks[0]["column_id"] is None
@@ -203,10 +188,7 @@ async def test_exhausted_gap_is_recovered_by_renumbering(client, db_session):
         client, third["id"], column_id=column_id, after_id=first["id"], before_id=second["id"]
     )
 
-    listing = await client.get(
-        f"/api/v1/tasks?project_id={project_id}&column_id={column_id}",
-        headers=bearer(await fresh_access(client)),
-    )
+    listing = await client.get(f"/api/v1/tasks?project_id={project_id}&column_id={column_id}")
     assert [task["title"] for task in listing.json()] == ["A", "C", "B"]
 
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from .conftest import bearer, create_project, fresh_access, register, set_metadata
+from .conftest import create_project, register, set_metadata
 
 METADATA = [
     {"code": "label", "title": "Метка", "type": "string", "is_required": True},
@@ -26,7 +26,6 @@ async def _create(client, project_id: int, attributes: dict):
         # Заголовок задачи — обычная колонка; attributes остаются для
         # дополнительных полей из справочника.
         json={"project_id": project_id, "title": "Задача", "attributes": attributes},
-        headers=bearer(await fresh_access(client)),
     )
 
 
@@ -83,9 +82,7 @@ async def test_invalid_attributes_rejected(client, attributes, case):
 
     assert response.status_code == 422, f"{case}: {response.text}"
 
-    listing = await client.get(
-        f"/api/v1/tasks?project_id={project_id}", headers=bearer(await fresh_access(client))
-    )
+    listing = await client.get(f"/api/v1/tasks?project_id={project_id}")
     # JSONB остаётся без недопустимых значений: задача не создана.
     assert listing.json() == []
 
@@ -109,7 +106,6 @@ async def test_business_validation_names_the_field(client, payload, expected_loc
     response = await client.post(
         "/api/v1/tasks",
         json={"project_id": project_id, "title": "Задача", "attributes": VALID, **payload},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == 422, response.text
@@ -143,13 +139,10 @@ async def test_failed_update_leaves_stored_attributes_untouched(client):
     rejected = await client.patch(
         f"/api/v1/tasks/{task_id}",
         json={"attributes": {"label": "Новое", "done": "yes"}},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert rejected.status_code == 422
-    listing = await client.get(
-        f"/api/v1/tasks?project_id={project_id}", headers=bearer(await fresh_access(client))
-    )
+    listing = await client.get(f"/api/v1/tasks?project_id={project_id}")
     assert listing.json()[0]["attributes"] == VALID
 
 
@@ -160,7 +153,6 @@ async def test_update_replaces_attribute_set(client):
     updated = await client.patch(
         f"/api/v1/tasks/{task_id}",
         json={"attributes": {"label": "Обновлено", "done": True}},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert updated.status_code == 200
@@ -175,7 +167,6 @@ async def test_jsonb_containment_filter(client):
 
     response = await client.get(
         f'/api/v1/tasks?project_id={project_id}&attributes_contains={{"done":true}}',
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == 200

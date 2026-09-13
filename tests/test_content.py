@@ -4,7 +4,7 @@ import pytest
 
 from app.content import ContentError, validate_document
 
-from .conftest import bearer, create_project, fresh_access, register, set_metadata
+from .conftest import create_project, register, set_metadata
 
 
 def _doc(*nodes: dict) -> dict:
@@ -156,7 +156,6 @@ async def test_task_with_foreign_node_is_rejected_with_field_loc(client):
             "title": "Задача",
             "content": _doc({"type": "iframe", "attrs": {"src": "https://example.com"}}),
         },
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == 422, response.text

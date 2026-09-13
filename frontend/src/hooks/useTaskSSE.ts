@@ -1,5 +1,4 @@
 import { useQueryClient } from '@tanstack/react-query';
-import axios from 'axios';
 import { useEffect } from 'react';
 import { z } from 'zod';
 
@@ -58,14 +57,14 @@ export function useTaskSSE(userId: number | null, onAuthenticationRequired: () =
           });
         } catch (error) {
           if (controller.signal.aborted) return;
-          if (
-            error instanceof AuthenticationRequired ||
-            (axios.isAxiosError(error) && [401, 403].includes(error.response?.status ?? 0))
-          ) {
+          // Сессию завершает только явный отказ авторизации. Перегрузка
+          // сервера и пропавшая связь — повод переподключиться, а не
+          // выбрасывать пользователя из аккаунта.
+          if (error instanceof AuthenticationRequired) {
             onAuthenticationRequired();
             return;
           }
-          // Сбой сети, Redis или разбора: следующий проход возьмёт новый токен.
+          // Сбой сети, Redis или разбора: следующий проход подключится заново.
         }
         await pause(
           Math.min(30_000, 1_000 * 2 ** Math.min(attempt++, 5)) + Math.random() * 500,

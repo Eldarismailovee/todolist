@@ -1,7 +1,15 @@
 import { AxiosError, AxiosHeaders } from 'axios';
 import { describe, expect, it } from 'vitest';
 
-import { api, AuthenticationRequired, describeError, fieldErrors } from './http';
+import {
+  api,
+  AuthenticationRequired,
+  classifyError,
+  describeError,
+  fieldErrors,
+  NetworkUnavailable,
+  ServiceUnavailable,
+} from './http';
 
 function axiosError(status: number, data: unknown): AxiosError {
   const error = new AxiosError('request failed');
@@ -115,5 +123,71 @@ describe('fieldErrors', () => {
     expect(fieldErrors(axiosError(422, { detail: [{ message: 'без loc' }] }))).toEqual({});
     expect(fieldErrors(axiosError(500, { detail: 'сломалось' }))).toEqual({});
     expect(fieldErrors(new Error('обычная ошибка'))).toEqual({});
+  });
+});
+
+describe('classifyError', () => {
+  it('401 — единственная причина считать сессию завершённой', () => {
+    expect(classifyError(axiosError(401, { detail: 'нет сессии' }))).toBeInstanceOf(
+      AuthenticationRequired,
+    );
+  });
+
+  it('429 и 5xx не завершают сессию', () => {
+    // Раньше любой отказ обмена превращался в «войдите снова»: перегрузка
+    // сервера выглядела как потерянный вход.
+    const throttled = classifyError(axiosError(429, { detail: 'слишком часто' }));
+    const broken = classifyError(axiosError(503, { detail: 'хранилище недоступно' }));
+
+    expect(throttled).toBeInstanceOf(ServiceUnavailable);
+    expect(broken).toBeInstanceOf(ServiceUnavailable);
+    expect(throttled).not.toBeInstanceOf(AuthenticationRequired);
+    expect(broken).not.toBeInstanceOf(AuthenticationRequired);
+  });
+
+  it('передаёт Retry-After, когда сервер его прислал', () => {
+    const error = axiosError(429, { detail: 'слишком часто' });
+    error.response!.headers = new AxiosHeaders({ 'retry-after': '30' });
+
+    const classified = classifyError(error);
+
+    expect(classified).toBeInstanceOf(ServiceUnavailable);
+    expect((classified as ServiceUnavailable).retryAfterSeconds).toBe(30);
+  });
+
+  it('отсутствие ответа — неопределённый результат, а не отказ авторизации', () => {
+    const offline = new AxiosError('Network Error');
+
+    const classified = classifyError(offline);
+
+    expect(classified).toBeInstanceOf(NetworkUnavailable);
+    expect(describeError(classified)).toContain('результат операции неизвестен');
+  });
+
+  it('4xx, кроме 401 и 429, остаётся обычной ошибкой запроса', () => {
+    const conflict = axiosError(409, { detail: 'Такой тег уже есть' });
+
+    expect(classifyError(conflict)).toBe(conflict);
+  });
+});
+
+describe('401 на проверке учётных данных', () => {
+  it('не превращается в «войдите снова»', () => {
+    // На экране входа сессии ещё нет: 401 здесь означает неверный код или
+    // пароль, и сообщение сервера должно дойти до пользователя.
+    const error = axiosError(401, { detail: 'Неверный или истёкший код' });
+    error.config = { url: '/auth/otp/verify', headers: new AxiosHeaders() };
+
+    const classified = classifyError(error);
+
+    expect(classified).not.toBeInstanceOf(AuthenticationRequired);
+    expect(describeError(classified)).toBe('Неверный или истёкший код');
+  });
+
+  it('на обычном маршруте 401 по-прежнему завершает сессию', () => {
+    const error = axiosError(401, { detail: 'Требуется вход' });
+    error.config = { url: '/projects', headers: new AxiosHeaders() };
+
+    expect(classifyError(error)).toBeInstanceOf(AuthenticationRequired);
   });
 });

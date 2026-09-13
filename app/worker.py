@@ -22,7 +22,8 @@ from .db import SessionLocal, engine
 from .integrations.mail import Mailer, create_mailer
 from .integrations.telegram import TelegramSender, create_telegram_sender
 from .logging_config import configure_logging
-from .models import NotificationPrefs, Project, RefreshToken, Task, TaskNotification, User
+from .models import NotificationPrefs, Project, Task, TaskNotification, User
+from .sessions import purge_expired_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -196,22 +197,6 @@ async def run_once() -> int:
     return sent
 
 
-async def purge_expired_refresh_tokens() -> int:
-    """Убрать записи refresh, которые уже не нужны для обнаружения повтора.
-
-    Строка создаётся на каждый обмен, то есть на каждый защищённый запрос
-    клиента, и без уборки таблица растёт неограниченно. Удаляются только
-    записи старше срока хранения — до этого момента погашенный токен обязан
-    находиться, иначе его повторное предъявление не будет распознано.
-    """
-    settings = get_settings()
-    cutoff = datetime.now(UTC) - timedelta(seconds=settings.refresh_retention_seconds)
-    async with SessionLocal() as db:
-        result = await db.execute(delete(RefreshToken).where(RefreshToken.expires_at < cutoff))
-        await db.commit()
-    return result.rowcount or 0
-
-
 async def main() -> None:
     configure_logging()
     settings = get_settings()
@@ -235,16 +220,16 @@ async def main() -> None:
 
             if asyncio.get_running_loop().time() >= next_cleanup:
                 next_cleanup = (
-                    asyncio.get_running_loop().time() + settings.refresh_cleanup_interval_seconds
+                    asyncio.get_running_loop().time() + settings.session_cleanup_interval_seconds
                 )
                 try:
-                    removed = await purge_expired_refresh_tokens()
+                    removed = await purge_expired_sessions(settings)
                     # Число в журнале — единственная метрика роста таблицы,
                     # которая здесь есть: постоянно большое значение означает,
-                    # что срок хранения или частота обменов выбраны неверно.
-                    logger.info("Удалено просроченных записей refresh: %s", removed)
+                    # что срок хранения или частота входов выбраны неверно.
+                    logger.info("Удалено истёкших сессий: %s", removed)
                 except Exception:  # noqa: BLE001 — уборка не должна ронять рассылку
-                    logger.exception("Уборка записей refresh завершилась ошибкой")
+                    logger.exception("Уборка сессий завершилась ошибкой")
 
             try:
                 await asyncio.wait_for(stopping.wait(), timeout=settings.notification_poll_seconds)

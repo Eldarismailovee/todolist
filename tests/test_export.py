@@ -6,7 +6,7 @@ from sqlalchemy import event
 
 from app.db import engine
 
-from .conftest import PNG, bearer, create_project, fresh_access, register, set_metadata
+from .conftest import PNG, create_project, register, set_metadata
 from .test_isolation import new_client
 
 METADATA = [
@@ -48,7 +48,6 @@ async def _seed(client, email: str, projects: int, tasks_per_project: int) -> No
                     "title": f"Задача {task}",
                     "attributes": {"done": task % 2 == 0},
                 },
-                headers=bearer(await fresh_access(client)),
             )
             assert response.status_code == 201
 
@@ -60,9 +59,7 @@ async def test_export_contains_only_own_data_without_secrets(client):
         await register(other, "stranger@example.com")
         await create_project(other, "Чужой проект")
 
-    response = await client.get(
-        "/api/v1/user/export-data", headers=bearer(await fresh_access(client))
-    )
+    response = await client.get("/api/v1/user/export-data")
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
@@ -84,22 +81,9 @@ async def test_export_restores_the_task_itself(client):
     await set_metadata(METADATA)
     project_id = await create_project(client, "Проект")
 
-    tag = (
-        await client.post(
-            "/api/v1/tags", json={"name": "срочно"}, headers=bearer(await fresh_access(client))
-        )
-    ).json()
-    category = (
-        await client.post(
-            "/api/v1/categories", json={"name": "Дом"}, headers=bearer(await fresh_access(client))
-        )
-    ).json()
-    columns = (
-        await client.get(
-            f"/api/v1/board/columns?project_id={project_id}",
-            headers=bearer(await fresh_access(client)),
-        )
-    ).json()
+    tag = (await client.post("/api/v1/tags", json={"name": "срочно"})).json()
+    category = (await client.post("/api/v1/categories", json={"name": "Дом"})).json()
+    columns = (await client.get(f"/api/v1/board/columns?project_id={project_id}")).json()
 
     content = {
         "type": "doc",
@@ -118,13 +102,10 @@ async def test_export_restores_the_task_itself(client):
             "tag_ids": [tag["id"]],
             "attributes": {"done": True},
         },
-        headers=bearer(await fresh_access(client)),
     )
     assert created.status_code == 201, created.text
 
-    body = (
-        await client.get("/api/v1/user/export-data", headers=bearer(await fresh_access(client)))
-    ).json()
+    body = (await client.get("/api/v1/user/export-data")).json()
 
     task = body["projects"][0]["tasks"][0]
     assert task["title"] == "Заплатить за свет"
@@ -151,13 +132,10 @@ async def test_export_lists_attachments_without_expiring_links(client):
     uploaded = await client.post(
         "/api/v1/files",
         files={"file": ("dot.png", io.BytesIO(PNG), "image/png")},
-        headers=bearer(await fresh_access(client)),
     )
     assert uploaded.status_code == 201
 
-    response = await client.get(
-        "/api/v1/user/export-data", headers=bearer(await fresh_access(client))
-    )
+    response = await client.get("/api/v1/user/export-data")
     body = response.json()
 
     assert [a["id"] for a in body["attachments"]] == [uploaded.json()["id"]]
@@ -169,15 +147,11 @@ async def test_export_does_not_scale_queries_with_project_count(client):
     """selectinload: число запросов не растёт вместе с числом проектов."""
     await _seed(client, "n1@example.com", projects=2, tasks_per_project=1)
     with QueryCounter() as small:
-        first = await client.get(
-            "/api/v1/user/export-data", headers=bearer(await fresh_access(client))
-        )
+        first = await client.get("/api/v1/user/export-data")
 
     await _seed(client, "n2@example.com", projects=6, tasks_per_project=1)
     with QueryCounter() as large:
-        second = await client.get(
-            "/api/v1/user/export-data", headers=bearer(await fresh_access(client))
-        )
+        second = await client.get("/api/v1/user/export-data")
 
     assert first.status_code == 200 and second.status_code == 200
     assert len(second.json()["projects"]) == 6
@@ -191,8 +165,6 @@ async def test_export_is_rejected_above_the_size_threshold(client, monkeypatch):
     monkeypatch.setattr(settings, "export_max_tasks", 1)
     await _seed(client, "big@example.com", projects=1, tasks_per_project=2)
 
-    response = await client.get(
-        "/api/v1/user/export-data", headers=bearer(await fresh_access(client))
-    )
+    response = await client.get("/api/v1/user/export-data")
 
     assert response.status_code == 413

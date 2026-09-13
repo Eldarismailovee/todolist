@@ -313,7 +313,12 @@ class TaskNotification(Base):
 
 
 class AuthSession(Base):
-    """Семейство refresh-токенов одного входа. Авторитетное состояние отзыва."""
+    """Сессия одного входа. Авторитетное состояние доступа и отзыва.
+
+    Клиент предъявляет её значением cookie; в базе лежит только SHA-256, как и
+    у любого другого секрета. Отдельной таблицы refresh-токенов больше нет:
+    ротации на каждый запрос нет, и гасить нечего.
+    """
 
     __tablename__ = "auth_sessions"
 
@@ -321,37 +326,23 @@ class AuthSession(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # Значение cookie в базе не хранится: по утёкшему дампу сессию не угнать.
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    # Абсолютный предел жизни сессии: автоматические SSE-переподключения
-    # продлевают refresh, но не саму сессию.
+    # Абсолютный предел жизни сессии: активность его не продлевает.
     absolute_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Предел простоя: продлевается при обращениях, но не чаще, чем раз в
+    # session_touch_interval_seconds — иначе каждый запрос был бы записью.
+    idle_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
     last_used_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
-
-
-class RefreshToken(Base):
-    """Хранится только SHA-256 значения токена; сырой токен на сервере не остаётся."""
-
-    __tablename__ = "refresh_tokens"
-
-    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
-    session_id: Mapped[UUID] = mapped_column(
-        ForeignKey("auth_sessions.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    issued_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    # Индексируется для уборки: записи удаляются пачкой по сроку, а таблица
-    # растёт на каждый защищённый запрос клиента.
-    expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, index=True
-    )
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AuditEvent(Base):

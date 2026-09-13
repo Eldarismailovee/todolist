@@ -4,7 +4,7 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, FastAPI, Request, status
+from fastapi import APIRouter, Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm.exc import StaleDataError
@@ -31,6 +31,7 @@ from .routers import (
     taxonomy,
     user,
 )
+from .security import require_csrf_guard
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -85,7 +86,9 @@ app.add_middleware(
     max_age=600,
 )
 
-api = APIRouter(prefix=API_PREFIX)
+# CSRF-проверка висит на всём префиксе: запросы авторизуются cookie, и
+# небезопасным является каждый мутирующий маршрут, а не только вход.
+api = APIRouter(prefix=API_PREFIX, dependencies=[Depends(require_csrf_guard)])
 api.include_router(auth.router)
 api.include_router(auth.oauth_router)
 api.include_router(projects.router)

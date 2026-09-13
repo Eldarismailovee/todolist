@@ -5,7 +5,7 @@ import logging
 import anthropic
 from fastapi import APIRouter, HTTPException, Request, status
 
-from ..dependencies import AssistantDep, ExternalCallPrincipal, RedisDep, SettingsDep
+from ..dependencies import AssistantDep, DetachedPrincipal, RedisDep, SettingsDep
 from ..integrations.ai import AssistantRefused
 from ..schemas import AssistRequest, AssistResponse
 from ..security import enforce_rate_limit
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 async def assist(
     payload: AssistRequest,
     request: Request,
-    principal: ExternalCallPrincipal,
+    principal: DetachedPrincipal,
     assistant: AssistantDep,
     redis: RedisDep,
     settings: SettingsDep,

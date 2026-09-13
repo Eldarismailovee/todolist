@@ -10,7 +10,7 @@ import { ThemeToggle } from './ThemeToggle';
 
 export const ProjectsLayout = () => {
   const user = useAuthStore((state) => state.user);
-  const { signOut, requireAuthentication, expired } = useAuth();
+  const { signOut, requireAuthentication, expired, logoutUnconfirmed } = useAuth();
   const navigate = useNavigate();
   const { projectId } = useParams();
   const [title, setTitle] = useState('');
@@ -100,6 +100,16 @@ export const ProjectsLayout = () => {
           >
             Перейти ко входу
           </button>
+        </div>
+      )}
+
+      {logoutUnconfirmed && (
+        <div
+          role="alert"
+          className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200"
+        >
+          Выход не подтверждён сервером: ответа не было. На этом устройстве вы вышли, но сессия
+          могла остаться активной — при первой возможности выйдите ещё раз.
         </div>
       )}
 

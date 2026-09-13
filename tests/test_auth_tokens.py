@@ -1,212 +1,204 @@
-"""Одноразовость access, ротация refresh и отзыв сессий."""
+"""Сессия в cookie: авторизация, сроки, отзыв и защита от CSRF."""
 
 import asyncio
-import json
 
-import pytest
-from sqlalchemy import text
+from sqlalchemy import func, select, text, update
 
-from app.access_tokens import access_key
 from app.config import get_settings
-from app.cookies import refresh_cookie_name
+from app.cookies import session_cookie_name
 from app.db import SessionLocal
+from app.models import AuthSession
+from app.sessions import purge_expired_sessions
 
-from .conftest import bearer, create_project, fresh_access, register
+from .conftest import create_project, register
 
 settings = get_settings()
-COOKIE = refresh_cookie_name(settings)
+COOKIE = session_cookie_name(settings)
 
 
-async def refresh_with(client, value: str, purpose: str = "api"):
-    """Обмен конкретным значением refresh.
+async def with_cookie(client, value: str, path: str = "/api/v1/projects"):
+    """Запрос с конкретным значением cookie.
 
     Значение передаётся заголовком: cookie jar httpx приводит бездоменный хост
     `testserver` к `testserver.local`, поэтому ручная запись в jar не попала бы
     в запрос, и тест проверял бы ветку «нет cookie».
     """
     client.cookies.clear()
-    return await client.post(
-        "/api/v1/auth/refresh",
-        json={"purpose": purpose},
-        headers={"Cookie": f"{COOKIE}={value}"},
+    return await client.get(path, headers={"Cookie": f"{COOKIE}={value}"})
+
+
+async def test_session_cookie_authorizes_requests(client):
+    """Токенов в теле ответа нет: запрос авторизует cookie, поставленная входом."""
+    await register(client, "session@example.com")
+
+    response = await client.get("/api/v1/projects")
+
+    assert response.status_code == 200
+    assert client.cookies.get(COOKIE)
+
+
+async def test_the_same_cookie_serves_many_parallel_requests(client):
+    """Обмена на одноразовый токен больше нет: параллельные запросы не в очереди."""
+    await register(client, "parallel@example.com")
+
+    responses = await asyncio.gather(*(client.get("/api/v1/projects") for _ in range(5)))
+
+    assert [r.status_code for r in responses] == [200] * 5
+
+
+async def test_session_value_is_not_exposed_to_the_client(client):
+    """Значение сессии живёт только в HttpOnly cookie и хешем в базе."""
+    verified = await client.post(
+        "/api/v1/auth/register", json={"email": "opaque@example.com", "password": "x" * 12}
     )
+    assert verified.status_code == 202
+
+    await register(client, "opaque2@example.com")
+    body = (await client.get("/api/v1/user/me")).json()
+
+    raw = client.cookies.get(COOKIE)
+    assert "access_token" not in body and "token" not in body
+    async with SessionLocal() as session:
+        stored = await session.scalar(select(AuthSession.token_hash))
+    assert stored is not None and stored != raw
 
 
-async def test_access_token_is_single_use(client):
-    await register(client, "single@example.com")
-    token = await fresh_access(client)
+async def test_unknown_cookie_value_is_rejected(client):
+    await register(client, "victim@example.com")
+    valid = client.cookies.get(COOKIE)
 
-    first = await client.get("/api/v1/projects", headers=bearer(token))
-    second = await client.get("/api/v1/projects", headers=bearer(token))
-
-    assert first.status_code == 200
-    assert second.status_code == 401
+    assert (await with_cookie(client, "z" * 43)).status_code == 401
+    # Чужая попытка не гасит действующую сессию: подбором её не отозвать.
+    assert (await with_cookie(client, valid)).status_code == 200
 
 
-async def test_concurrent_use_of_one_access_token_lets_only_one_through(client, redis_client):
-    """GETDEL атомарен: одновременное предъявление проходит ровно один раз."""
-    await register(client, "race@example.com")
-    token = await fresh_access(client)
-
-    responses = await asyncio.gather(
-        client.get("/api/v1/projects", headers=bearer(token)),
-        client.get("/api/v1/projects", headers=bearer(token)),
-    )
-    codes = sorted(r.status_code for r in responses)
-    assert codes == [200, 401]
-    # Запись погашена, а не оставлена в Redis.
-    assert await redis_client.get(access_key(settings, token)) is None
+async def test_missing_cookie_is_unauthorized(client):
+    assert (await client.get("/api/v1/projects")).status_code == 401
 
 
 async def test_token_in_query_string_is_not_authorization(client):
     await register(client, "query@example.com")
-    token = await fresh_access(client)
+    value = client.cookies.get(COOKIE)
+    client.cookies.clear()
 
-    response = await client.get(f"/api/v1/projects?access_token={token}")
-
-    assert response.status_code == 401
-
-
-async def test_purpose_mismatch_rejected_and_token_burned(client, redis_client):
-    await register(client, "purpose@example.com")
-    sse_token = await fresh_access(client, "sse")
-
-    rest = await client.get("/api/v1/projects", headers=bearer(sse_token))
-
-    assert rest.status_code == 401
-    # Токен погашен: повторить попытку с ним нельзя даже по назначению.
-    assert await redis_client.get(access_key(settings, sse_token)) is None
-    stream = await client.get("/api/v1/tasks/stream", headers=bearer(sse_token))
-    assert stream.status_code == 401
-
-
-async def test_expired_access_rejected_regardless_of_key_ttl(client, redis_client):
-    """Сервер проверяет expires_at, а не только срок жизни ключа Redis."""
-    await register(client, "expired@example.com")
-    token = await fresh_access(client)
-
-    key = access_key(settings, token)
-    record = json.loads(await redis_client.get(key))
-    record["expires_at"] = record["expires_at"] - 10_000
-    await redis_client.set(key, json.dumps(record), ex=300)
-
-    response = await client.get("/api/v1/projects", headers=bearer(token))
+    response = await client.get(f"/api/v1/projects?session={value}")
 
     assert response.status_code == 401
 
 
-async def test_missing_authorization_header(client):
-    response = await client.get("/api/v1/projects")
-    assert response.status_code == 401
+async def test_absolute_expiry_ends_the_session(client):
+    """Абсолютный срок активность не продлевает."""
+    await register(client, "absolute@example.com")
 
-
-async def test_refresh_rotates_cookie_and_issues_new_access(client):
-    await register(client, "rotate@example.com")
-    first_cookie = client.cookies.get(COOKIE)
-
-    response = await client.post("/api/v1/auth/refresh", json={"purpose": "api"})
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["expires_in"] == settings.access_token_ttl_seconds
-    assert body["token_type"] == "Bearer"
-    # Refresh token не возвращается в JSON.
-    assert "refresh_token" not in body
-    assert response.headers["cache-control"] == "no-store"
-    assert client.cookies.get(COOKIE) != first_cookie
-
-
-async def test_refresh_reuse_revokes_the_session_family(client):
-    access_before = await register(client, "reuse@example.com")
-    stale_cookie = client.cookies.get(COOKIE)
-
-    assert (await client.post("/api/v1/auth/refresh", json={"purpose": "api"})).status_code == 200
-
-    replay = await refresh_with(client, stale_cookie)
-    assert replay.status_code == 401
-
-    # Семейство отозвано: уже выданный access этой сессии тоже не даёт доступ.
-    assert (await client.get("/api/v1/projects", headers=bearer(access_before))).status_code == 401
-
-
-async def test_unknown_refresh_value_revokes_nothing(client):
-    """Произвольный неверный токен не должен гасить чужую сессию."""
-    await register(client, "victim@example.com")
-    valid_cookie = client.cookies.get(COOKIE)
-
-    assert (await refresh_with(client, "z" * 43)).status_code == 401
-
-    assert (await refresh_with(client, valid_cookie)).status_code == 200
-
-
-async def test_expired_refresh_rejected(client):
-    await register(client, "oldrefresh@example.com")
     async with SessionLocal() as session:
         await session.execute(
-            text("UPDATE refresh_tokens SET expires_at = now() - interval '1 second'")
+            update(AuthSession).values(absolute_expires_at=text("now() - interval '1 second'"))
         )
         await session.commit()
 
-    response = await client.post("/api/v1/auth/refresh", json={"purpose": "api"})
-
-    assert response.status_code == 401
+    assert (await client.get("/api/v1/projects")).status_code == 401
 
 
-async def test_concurrent_refresh_with_same_cookie_serializes(client):
-    """Второй одновременный обмен тем же значением — повтор, а не вторая выдача."""
-    await register(client, "parallel@example.com")
+async def test_idle_expiry_ends_the_session(client):
+    """Простой дольше предела завершает сессию, даже если абсолютный срок цел."""
+    await register(client, "idle@example.com")
 
-    responses = await asyncio.gather(
-        client.post("/api/v1/auth/refresh", json={"purpose": "api"}),
-        client.post("/api/v1/auth/refresh", json={"purpose": "api"}),
-    )
-    codes = sorted(r.status_code for r in responses)
-    assert codes == [200, 401]
+    async with SessionLocal() as session:
+        await session.execute(
+            update(AuthSession).values(idle_expires_at=text("now() - interval '1 second'"))
+        )
+        await session.commit()
 
-
-async def test_refresh_requires_csrf_headers(client):
-    await register(client, "csrf@example.com")
-
-    without_header = await client.post(
-        "/api/v1/auth/refresh", json={"purpose": "api"}, headers={"X-CSRF-Guard": ""}
-    )
-    foreign_origin = await client.post(
-        "/api/v1/auth/refresh", json={"purpose": "api"}, headers={"Origin": "https://evil.example"}
-    )
-
-    assert without_header.status_code == 403
-    assert foreign_origin.status_code == 403
+    assert (await client.get("/api/v1/projects")).status_code == 401
 
 
-@pytest.mark.parametrize("payload", [{"purpose": "admin"}, {}, {"purpose": "api", "user_id": 1}])
-async def test_refresh_body_is_strict(client, payload):
-    await register(client, f"strict{abs(hash(str(payload)))}@example.com")
-    response = await client.post("/api/v1/auth/refresh", json=payload)
-    assert response.status_code == 422
+async def test_activity_extends_the_idle_deadline(client):
+    """Продление происходит не чаще touch-интервала, но происходит."""
+    await register(client, "touch@example.com")
+
+    async with SessionLocal() as session:
+        # Сдвигаем окно назад: следующий запрос попадает за touch-интервал.
+        await session.execute(
+            update(AuthSession).values(
+                last_used_at=text("now() - interval '1 hour'"),
+                idle_expires_at=text("now() + interval '1 minute'"),
+            )
+        )
+        await session.commit()
+        before = await session.scalar(select(AuthSession.idle_expires_at))
+
+    assert (await client.get("/api/v1/projects")).status_code == 200
+
+    async with SessionLocal() as session:
+        after = await session.scalar(select(AuthSession.idle_expires_at))
+    assert after > before
 
 
 async def test_logout_revokes_session_and_clears_cookie(client):
-    access = await register(client, "logout@example.com")
+    await register(client, "logout@example.com")
+    value = client.cookies.get(COOKIE)
 
     response = await client.post("/api/v1/auth/logout")
 
     assert response.status_code == 204
     assert not client.cookies.get(COOKIE)
-    assert (await client.get("/api/v1/projects", headers=bearer(access))).status_code == 401
+    # Отозвана именно сессия, а не только удалена cookie у этого клиента.
+    assert (await with_cookie(client, value)).status_code == 401
+
+
+async def test_logout_with_unknown_value_answers_the_same(client):
+    """Иначе выходом можно было бы проверять чужие значения на существование."""
+    response = await client.post("/api/v1/auth/logout", headers={"Cookie": f"{COOKIE}={'q' * 43}"})
+
+    assert response.status_code == 204
 
 
 async def test_password_change_revokes_all_sessions(client):
-    access = await register(client, "pwd@example.com", "correct-horse-battery")
+    await register(client, "pwd@example.com", "correct-horse-battery")
+    value = client.cookies.get(COOKIE)
 
     response = await client.post(
         "/api/v1/user/change-password",
         json={"current_password": "correct-horse-battery", "new_password": "new-horse-battery"},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == 204
-    assert (await client.get("/api/v1/projects", headers=bearer(access))).status_code == 401
-    assert (await client.post("/api/v1/auth/refresh", json={"purpose": "api"})).status_code == 401
+    assert (await with_cookie(client, value)).status_code == 401
+
+
+async def test_mutations_require_csrf_headers(client):
+    """Cookie отправляет браузер сам, поэтому мутации защищены Origin и заголовком."""
+    await register(client, "csrf@example.com")
+
+    without_header = await client.post(
+        "/api/v1/projects", json={"title": "Проект"}, headers={"X-CSRF-Guard": ""}
+    )
+    foreign_origin = await client.post(
+        "/api/v1/projects", json={"title": "Проект"}, headers={"Origin": "https://evil.example"}
+    )
+    safe_read = await client.get("/api/v1/projects")
+
+    assert without_header.status_code == 403
+    assert foreign_origin.status_code == 403
+    # Чтения не ломаются: их защищает SameSite=Strict у самой cookie.
+    assert safe_read.status_code == 200
+
+
+async def test_csrf_guard_covers_every_router(client):
+    """Проверка висит на префиксе, а не на отдельных маршрутах."""
+    await register(client, "csrf-all@example.com")
+    project_id = await create_project(client)
+
+    for method, url, payload in (
+        ("POST", "/api/v1/tasks", {"project_id": project_id, "title": "Задача"}),
+        ("POST", "/api/v1/tags", {"name": "тег"}),
+        ("PUT", "/api/v1/notifications/settings", {"email_enabled": True}),
+        ("DELETE", f"/api/v1/projects/{project_id}", None),
+    ):
+        response = await client.request(
+            method, url, json=payload, headers={"Origin": "https://evil.example"}
+        )
+        assert response.status_code == 403, f"{method} {url}"
 
 
 async def test_short_password_rejected(client):
@@ -219,12 +211,12 @@ async def test_short_password_rejected(client):
 async def test_account_deletion_removes_data_and_sessions(client):
     await register(client, "gone@example.com")
     project_id = await create_project(client)
+    value = client.cookies.get(COOKIE)
 
     response = await client.request(
         "DELETE",
         "/api/v1/user/me",
         json={"password": "correct-horse-battery"},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == 204
@@ -235,13 +227,13 @@ async def test_account_deletion_removes_data_and_sessions(client):
         users = await session.scalar(text("SELECT count(*) FROM users"))
     assert remaining == 0
     assert users == 0
-    assert (await client.post("/api/v1/auth/refresh", json={"purpose": "api"})).status_code == 401
+    assert (await with_cookie(client, value)).status_code == 401
 
 
 async def test_current_user_endpoint(client):
     await register(client, "whoami@example.com")
 
-    response = await client.get("/api/v1/user/me", headers=bearer(await fresh_access(client)))
+    response = await client.get("/api/v1/user/me")
 
     assert response.status_code == 200
     body = response.json()
@@ -250,34 +242,32 @@ async def test_current_user_endpoint(client):
     assert "hashed_password" not in body
 
 
-async def test_retention_removes_only_records_beyond_the_window(client):
-    """Записи растут на каждый запрос, но погашенный токен нужен для reuse."""
-    from sqlalchemy import func, select
-
-    from app.models import RefreshToken
-    from app.worker import purge_expired_refresh_tokens
-
+async def test_retention_removes_only_sessions_beyond_the_window(client):
+    """Запись нужна, пока сессию можно предъявить, и не нужна после."""
     await register(client, "retention@example.com")
-    await fresh_access(client)
 
     async with SessionLocal() as session:
-        before = await session.scalar(select(func.count()).select_from(RefreshToken))
-    assert before >= 2
+        before = await session.scalar(select(func.count()).select_from(AuthSession))
+    assert before == 1
 
-    # Свежие записи уборка не трогает: они ещё в окне обнаружения повтора.
-    assert await purge_expired_refresh_tokens() == 0
+    # Действующая сессия уборкой не затрагивается.
+    assert await purge_expired_sessions(settings) == 0
 
     async with SessionLocal() as session:
         await session.execute(
-            text(
-                "UPDATE refresh_tokens SET expires_at = now() - "
-                f"interval '{settings.refresh_retention_seconds + 3600} seconds'"
+            update(AuthSession).values(
+                absolute_expires_at=text(
+                    f"now() - interval '{settings.session_retention_seconds + 3600} seconds'"
+                ),
+                idle_expires_at=text(
+                    f"now() - interval '{settings.session_retention_seconds + 3600} seconds'"
+                ),
             )
         )
         await session.commit()
 
-    removed = await purge_expired_refresh_tokens()
+    removed = await purge_expired_sessions(settings)
 
     assert removed == before
     async with SessionLocal() as session:
-        assert await session.scalar(select(func.count()).select_from(RefreshToken)) == 0
+        assert await session.scalar(select(func.count()).select_from(AuthSession)) == 0

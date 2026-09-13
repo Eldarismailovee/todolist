@@ -44,14 +44,21 @@ class Settings(BaseSettings):
     # SPA и API обслуживаются с одного HTTPS origin; точное совпадение.
     allowed_origin: str = Field(default="http://localhost:5173")
 
-    # --- Токены и сессии -------------------------------------------------
+    # --- Сессии ------------------------------------------------------------
     # Сроки разделены по назначению: одно значение на все credentials создавало
     # видимость правила «всё живёт пять минут», которого на деле не было —
     # OTP, state и ссылки на файлы всегда жили дольше. Границы заданы явно,
-    # чтобы окружение не могло тихо превратить короткий токен в долгий.
-    access_token_ttl_seconds: int = Field(default=300, ge=30, le=900)
-    refresh_token_ttl_seconds: int = Field(default=300, ge=60, le=24 * 3600)
+    # чтобы окружение не могло тихо превратить короткий срок в долгий.
+    #
+    # Сессия ограничена двумя сроками: абсолютным (активность его не продлевает)
+    # и пределом простоя. Второй продлевается не чаще touch-интервала, иначе
+    # каждое чтение сессии было бы записью.
     session_absolute_ttl_seconds: int = Field(default=12 * 3600, ge=300, le=30 * 24 * 3600)
+    session_idle_ttl_seconds: int = Field(default=3600, ge=300, le=30 * 24 * 3600)
+    session_touch_interval_seconds: int = Field(default=60, ge=1, le=3600)
+    # Сколько держать запись после того, как сессия перестала кого-либо пускать.
+    session_retention_seconds: int = Field(default=7 * 24 * 3600, ge=3600, le=90 * 24 * 3600)
+    session_cleanup_interval_seconds: int = Field(default=3600, ge=60, le=24 * 3600)
     sse_stream_seconds: int = 240
     sse_revocation_check_seconds: int = 5
 
@@ -64,8 +71,6 @@ class Settings(BaseSettings):
     # --- Rate limit (фиксированное окно) ---------------------------------
     login_rate_limit: int = 10
     login_rate_window_seconds: int = 300
-    refresh_rate_limit: int = 240
-    refresh_rate_window_seconds: int = 60
 
     # Ключ для HMAC коротких значений (OTP). Шестизначный код слишком мал для
     # обычного хеша: без секрета его подобрали бы по утёкшей базе за секунды.
@@ -136,10 +141,6 @@ class Settings(BaseSettings):
 
     # --- Загрузка файлов -------------------------------------------------
     upload_dir: str = "var/uploads"
-    # Ссылка на картинку живёт дольше access-токена намеренно: её открывает
-    # тег <img> при каждом показе задачи. Значение задано здесь, а не константой
-    # в коде подписи, чтобы срок был виден вместе с остальными.
-    attachment_url_ttl_seconds: int = Field(default=3600, ge=60, le=24 * 3600)
     max_upload_bytes: int = 5 * 1024 * 1024
     # Границы, заголовки частей и имя файла идут в теле поверх самого файла.
     # Общий лимит тела считает их вместе с содержимым, поэтому запас нужен
@@ -156,14 +157,6 @@ class Settings(BaseSettings):
     # --- Уведомления о дедлайнах -----------------------------------------
     notification_poll_seconds: int = 60
     notification_batch_size: int = 200
-
-    # --- Хранение записей refresh ----------------------------------------
-    # Строка создаётся на каждый обмен refresh, то есть на каждый защищённый
-    # запрос клиента: без уборки таблица растёт неограниченно. Срок хранения
-    # не может быть короче абсолютного срока сессии — иначе обнаружение
-    # повторного использования перестало бы работать в пределах живой сессии.
-    refresh_retention_seconds: int = Field(default=7 * 24 * 3600, ge=3600, le=90 * 24 * 3600)
-    refresh_cleanup_interval_seconds: int = Field(default=3600, ge=60, le=24 * 3600)
 
     # --- Лимиты данных ---------------------------------------------------
     max_attributes: int = 64
@@ -197,13 +190,13 @@ class Settings(BaseSettings):
         return self.max_upload_bytes + self.multipart_overhead_bytes
 
     @model_validator(mode="after")
-    def _check_refresh_retention(self) -> "Settings":
-        """Уборка не должна опережать обнаружение повторного использования."""
-        if self.refresh_retention_seconds < self.session_absolute_ttl_seconds:
+    def _check_session_retention(self) -> "Settings":
+        """Уборка не должна опережать конец жизни самой сессии."""
+        if self.session_retention_seconds < self.session_absolute_ttl_seconds:
             raise ValueError(
-                f"REFRESH_RETENTION_SECONDS={self.refresh_retention_seconds} меньше срока "
-                f"сессии ({self.session_absolute_ttl_seconds}): погашенный токен исчезал бы "
-                "раньше, чем сессия перестанет действовать"
+                f"SESSION_RETENTION_SECONDS={self.session_retention_seconds} меньше срока "
+                f"сессии ({self.session_absolute_ttl_seconds}): запись исчезала бы раньше, "
+                "чем сессия перестанет действовать"
             )
         return self
 

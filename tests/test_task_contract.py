@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from .conftest import bearer, create_project, create_task, fresh_access, register, set_metadata
+from .conftest import create_project, create_task, register, set_metadata
 
 METADATA = [{"code": "note", "title": "Заметка", "type": "string", "is_required": False}]
 
@@ -35,7 +35,6 @@ async def test_due_at_requires_timezone(client, due_at, expected):
     response = await client.post(
         "/api/v1/tasks",
         json={"project_id": project_id, "title": "Задача", "due_at": due_at},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == expected, response.text
@@ -52,9 +51,7 @@ async def test_due_at_keeps_the_sent_moment(client):
     assert datetime.fromisoformat(created["due_at"]) == expected
 
     # После обхода через БД момент тот же: смещение могло быть записано иначе.
-    listing = await client.get(
-        f"/api/v1/tasks?project_id={project_id}", headers=bearer(await fresh_access(client))
-    )
+    listing = await client.get(f"/api/v1/tasks?project_id={project_id}")
     assert datetime.fromisoformat(listing.json()[0]["due_at"]) == expected
 
 
@@ -67,7 +64,6 @@ async def test_explicit_null_is_rejected_where_it_is_not_an_operation(client, fi
     response = await client.patch(
         f"/api/v1/tasks/{task['id']}",
         json={field: None},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == 422, response.text
@@ -89,7 +85,6 @@ async def test_explicit_null_clears_the_value(client, field):
     response = await client.patch(
         f"/api/v1/tasks/{task['id']}",
         json={field: None},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == 200, response.text

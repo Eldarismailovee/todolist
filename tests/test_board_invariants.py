@@ -13,10 +13,8 @@ from sqlalchemy import delete, select
 from app.models import BoardColumn
 
 from .conftest import (
-    bearer,
     create_project,
     create_task,
-    fresh_access,
     live_client,
     login,
     register,
@@ -30,12 +28,7 @@ async def _setup(client, email: str) -> tuple[int, list[dict]]:
     await register(client, email)
     await set_metadata(METADATA)
     project_id = await create_project(client)
-    columns = (
-        await client.get(
-            f"/api/v1/board/columns?project_id={project_id}",
-            headers=bearer(await fresh_access(client)),
-        )
-    ).json()
+    columns = (await client.get(f"/api/v1/board/columns?project_id={project_id}")).json()
     return project_id, columns
 
 
@@ -43,7 +36,7 @@ async def _patch(client, task_id: int, body: dict, headers: dict | None = None):
     return await client.patch(
         f"/api/v1/tasks/{task_id}",
         json=body,
-        headers={**bearer(await fresh_access(client)), **(headers or {})},
+        headers=headers or {},
     )
 
 
@@ -74,7 +67,6 @@ async def test_move_out_of_the_board_reopens_the_task(client):
     moved = await client.post(
         f"/api/v1/tasks/{task['id']}/move",
         json={"column_id": None},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert moved.status_code == 200, moved.text
@@ -93,7 +85,6 @@ async def test_patch_and_move_agree_on_the_done_column(client):
     moved = await client.post(
         f"/api/v1/tasks/{by_move['id']}/move",
         json={"column_id": done["id"]},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert (patched.json()["completed_at"] is None) == (moved.json()["completed_at"] is None)
@@ -143,9 +134,7 @@ async def test_stale_if_match_does_not_overwrite_a_newer_change(client):
     )
 
     assert late.status_code == 412, late.text
-    current = await client.get(
-        f"/api/v1/tasks?project_id={project_id}", headers=bearer(await fresh_access(client))
-    )
+    current = await client.get(f"/api/v1/tasks?project_id={project_id}")
     assert current.json()[0]["title"] == "Сохранено другой вкладкой"
 
 
@@ -174,7 +163,6 @@ async def test_task_cannot_be_its_own_neighbour(client):
     response = await client.post(
         f"/api/v1/tasks/{task['id']}/move",
         json={"column_id": columns[0]["id"], "before_id": task["id"]},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == 422, response.text
@@ -192,7 +180,6 @@ async def test_before_and_after_cannot_be_the_same_task(client):
             "before_id": neighbour["id"],
             "after_id": neighbour["id"],
         },
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == 422, response.text
@@ -212,7 +199,6 @@ async def test_neighbours_in_the_wrong_order_are_rejected(client):
             "after_id": second["id"],
             "before_id": first["id"],
         },
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == 422, response.text
@@ -228,10 +214,7 @@ async def test_listing_columns_does_not_create_them(client, db_session):
     await db_session.commit()
 
     for _ in range(2):
-        response = await client.get(
-            f"/api/v1/board/columns?project_id={project_id}",
-            headers=bearer(await fresh_access(client)),
-        )
+        response = await client.get(f"/api/v1/board/columns?project_id={project_id}")
         assert response.json() == []
 
     remaining = await db_session.scalars(
@@ -255,31 +238,17 @@ async def test_parallel_deletes_cannot_remove_the_last_two_columns(workers):
         project_id = await create_project(first)
         await login(second, "last-column@example.com")
 
-        columns = (
-            await first.get(
-                f"/api/v1/board/columns?project_id={project_id}",
-                headers=bearer(await fresh_access(first)),
-            )
-        ).json()
+        columns = (await first.get(f"/api/v1/board/columns?project_id={project_id}")).json()
         # Остаются ровно две: следующая пара удалений конкурирует за последнюю.
-        dropped = await first.delete(
-            f"/api/v1/board/columns/{columns[0]['id']}",
-            headers=bearer(await fresh_access(first)),
-        )
+        dropped = await first.delete(f"/api/v1/board/columns/{columns[0]['id']}")
         assert dropped.status_code == 204
 
-        tokens = [await fresh_access(first), await fresh_access(second)]
         responses = await asyncio.gather(
-            first.delete(f"/api/v1/board/columns/{columns[1]['id']}", headers=bearer(tokens[0])),
-            second.delete(f"/api/v1/board/columns/{columns[2]['id']}", headers=bearer(tokens[1])),
+            first.delete(f"/api/v1/board/columns/{columns[1]['id']}"),
+            second.delete(f"/api/v1/board/columns/{columns[2]['id']}"),
         )
 
-        left = (
-            await first.get(
-                f"/api/v1/board/columns?project_id={project_id}",
-                headers=bearer(await fresh_access(first)),
-            )
-        ).json()
+        left = (await first.get(f"/api/v1/board/columns?project_id={project_id}")).json()
 
     assert sorted(r.status_code for r in responses) == [204, 409]
     assert len(left) == 1
@@ -293,17 +262,14 @@ async def test_parallel_task_creation_gets_distinct_positions(workers):
         project_id = await create_project(first)
         await login(second, "positions@example.com")
 
-        tokens = [await fresh_access(first), await fresh_access(second)]
         created = await asyncio.gather(
             first.post(
                 "/api/v1/tasks",
                 json={"project_id": project_id, "title": "Первая"},
-                headers=bearer(tokens[0]),
             ),
             second.post(
                 "/api/v1/tasks",
                 json={"project_id": project_id, "title": "Вторая"},
-                headers=bearer(tokens[1]),
             ),
         )
 

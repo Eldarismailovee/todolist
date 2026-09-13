@@ -1,12 +1,9 @@
 """Проверки авторизации и Pub/Sub против двух настоящих процессов приложения."""
 
-import asyncio
 import json
 
 from .conftest import (
-    bearer,
     create_project,
-    fresh_access,
     live_client,
     login,
     register,
@@ -18,28 +15,28 @@ from .test_sse import read_event
 METADATA = [{"code": "note", "title": "Заметка", "type": "string", "is_required": False}]
 
 
-async def test_one_access_token_is_burned_across_workers(workers):
-    """Погашение атомарно в Redis, а не в памяти отдельного процесса."""
-    async with live_client(workers[0]) as first, live_client(workers[1]) as second:
-        await register(first, "cross@example.com")
-        token = await fresh_access(first)
-
-        responses = await asyncio.gather(
-            first.get("/api/v1/projects", headers=bearer(token)),
-            second.get("/api/v1/projects", headers=bearer(token)),
-        )
-
-    assert sorted(r.status_code for r in responses) == [200, 401]
-
-
-async def test_token_issued_on_one_worker_is_accepted_by_another(workers):
+async def test_session_from_one_worker_is_accepted_by_another(workers):
+    """Авторитет сессии — PostgreSQL, а не память отдельного процесса."""
     async with live_client(workers[0]) as first, live_client(workers[1]) as second:
         await register(first, "portable@example.com")
-        token = await fresh_access(first)
+        second.cookies.update(first.cookies)
 
-        response = await second.get("/api/v1/projects", headers=bearer(token))
+        response = await second.get("/api/v1/projects")
 
     assert response.status_code == 200
+
+
+async def test_revocation_on_one_worker_is_seen_by_another(workers):
+    """Выход в одной вкладке закрывает доступ и на другом процессе."""
+    async with live_client(workers[0]) as first, live_client(workers[1]) as second:
+        await register(first, "revoke-cross@example.com")
+        second.cookies.update(first.cookies)
+        assert (await second.get("/api/v1/projects")).status_code == 200
+
+        assert (await first.post("/api/v1/auth/logout")).status_code == 204
+        after = await second.get("/api/v1/projects")
+
+    assert after.status_code == 401
 
 
 async def test_event_published_by_one_worker_reaches_stream_on_another(workers):
@@ -52,17 +49,13 @@ async def test_event_published_by_one_worker_reaches_stream_on_another(workers):
         # вход теперь двухшаговый, с подтверждением кодом.
         await login(writing, "pubsub@example.com")
 
-        token = await fresh_access(streaming, "sse")
-        async with streaming.stream(
-            "GET", "/api/v1/tasks/stream", headers=bearer(token)
-        ) as response:
+        async with streaming.stream("GET", "/api/v1/tasks/stream") as response:
             lines = response.aiter_lines()
             assert (await read_event(lines))[0] == "ready"
 
             created = await writing.post(
                 "/api/v1/tasks",
                 json={"project_id": project_id, "title": "С другого воркера"},
-                headers=bearer(await fresh_access(writing)),
             )
             assert created.status_code == 201
 

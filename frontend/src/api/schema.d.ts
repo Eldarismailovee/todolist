@@ -64,26 +64,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/auth/refresh': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /**
-     * Refresh
-     * @description Один обмен refresh на новый access указанного назначения и новый refresh.
-     */
-    post: operations['refresh_api_v1_auth_refresh_post'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   '/api/v1/auth/logout': {
     parameters: {
       query?: never;
@@ -96,6 +76,9 @@ export interface paths {
     /**
      * Logout
      * @description Отзывает сессию и удаляет cookie. Ответ одинаков независимо от результата.
+     *
+     *     Одинаковый ответ на известное и неизвестное значение обязателен: иначе
+     *     выходом можно было бы проверять чужие значения на существование.
      */
     post: operations['logout_api_v1_auth_logout_post'];
     delete?: never;
@@ -432,7 +415,11 @@ export interface paths {
     };
     /**
      * Download File
-     * @description Доступ даёт либо подписанная ссылка, либо access token владельца.
+     * @description Файл отдаётся владельцу по сессионной cookie.
+     *
+     *     Тег `<img>` отправляет её сам: она HttpOnly и ограничена этим origin,
+     *     поэтому ссылка на картинку больше не является отдельным предъявительским
+     *     доступом с собственным сроком жизни.
      */
     get: operations['download_file_api_v1_files__attachment_id__get'];
     put?: never;
@@ -708,7 +695,7 @@ export interface paths {
     put?: never;
     /**
      * Change Password
-     * @description Смена пароля отзывает все сессии: оставшиеся access-токены и открытые
+     * @description Смена пароля отзывает все сессии: cookie в других браузерах и открытые
      *     SSE-потоки перестают давать доступ, требуется повторный вход.
      */
     post: operations['change_password_api_v1_user_change_password_post'];
@@ -764,19 +751,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
-    /** AccessTokenResponse */
-    AccessTokenResponse: {
-      /** Access Token */
-      access_token: string;
-      /** Expires In */
-      expires_in: number;
-      /**
-       * Token Type
-       * @default Bearer
-       * @constant
-       */
-      token_type: 'Bearer';
-    };
     /** AnalyticsCategorySlice */
     AnalyticsCategorySlice: {
       /** Name */
@@ -1136,17 +1110,6 @@ export interface components {
        */
       created_at: string;
     };
-    /**
-     * RefreshRequest
-     * @description `user_id` клиент не передаёт: он берётся из серверной записи сессии.
-     */
-    RefreshRequest: {
-      /**
-       * Purpose
-       * @enum {string}
-       */
-      purpose: 'api' | 'sse';
-    };
     /** RegisterRequest */
     RegisterRequest: {
       /**
@@ -1422,40 +1385,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          'application/json': components['schemas']['AccessTokenResponse'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  refresh_api_v1_auth_refresh_post: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['RefreshRequest'];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['AccessTokenResponse'];
+          'application/json': components['schemas']['CurrentUserResponse'];
         };
       };
       /** @description Validation Error */
@@ -2235,10 +2165,7 @@ export interface operations {
   };
   download_file_api_v1_files__attachment_id__get: {
     parameters: {
-      query?: {
-        exp?: string;
-        sig?: string;
-      };
+      query?: never;
       header?: never;
       path: {
         attachment_id: string;

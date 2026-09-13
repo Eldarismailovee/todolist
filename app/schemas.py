@@ -106,22 +106,6 @@ class OAuthProvidersResponse(BaseModel):
     providers: list[Literal["google", "github"]]
 
 
-class RefreshRequest(BaseModel):
-    """`user_id` клиент не передаёт: он берётся из серверной записи сессии."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    purpose: Literal["api", "sse"]
-
-
-class AccessTokenResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    access_token: str
-    expires_in: int
-    token_type: Literal["Bearer"] = "Bearer"
-
-
 class CurrentUserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

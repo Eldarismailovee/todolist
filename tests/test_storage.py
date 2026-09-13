@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models import Attachment
 
-from .conftest import PNG, bearer, fresh_access, register
+from .conftest import PNG, register
 
 settings = get_settings()
 PASSWORD = "correct-horse-battery"
@@ -31,7 +31,6 @@ async def _upload(client, name: str = "dot.png"):
     return await client.post(
         "/api/v1/files",
         files={"file": (name, io.BytesIO(PNG), "image/png")},
-        headers=bearer(await fresh_access(client)),
     )
 
 
@@ -57,7 +56,6 @@ async def test_upload_checks_the_actual_format(client, content_type, payload, ex
     response = await client.post(
         "/api/v1/files",
         files={"file": ("file", io.BytesIO(payload), content_type)},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == expected, response.text
@@ -76,7 +74,6 @@ async def test_account_deletion_removes_attachment_bytes(client, db_session):
         "DELETE",
         "/api/v1/user/me",
         json={"password": PASSWORD},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert deleted.status_code == 204, deleted.text
@@ -86,8 +83,6 @@ async def test_account_deletion_removes_attachment_bytes(client, db_session):
 async def test_failed_commit_does_not_leave_orphan_bytes(client, monkeypatch, db_session):
     """Запись байтов без сохранённой записи — потерянный навсегда файл."""
     await register(client, "orphan@example.com", PASSWORD)
-    # Токен берётся до подмены: обмен refresh тоже делает commit.
-    token = await fresh_access(client)
 
     before = await anyio.to_thread.run_sync(_files_on_disk)
 
@@ -100,7 +95,6 @@ async def test_failed_commit_does_not_leave_orphan_bytes(client, monkeypatch, db
         await client.post(
             "/api/v1/files",
             files={"file": ("dot.png", io.BytesIO(PNG), "image/png")},
-            headers=bearer(token),
         )
 
     monkeypatch.undo()

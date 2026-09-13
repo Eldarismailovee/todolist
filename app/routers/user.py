@@ -1,12 +1,12 @@
 """Данные пользователя: экспорт, смена пароля, удаление аккаунта."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from .. import audit, otp
-from ..cookies import clear_refresh_cookie
+from ..cookies import clear_session_cookie
 from ..dependencies import CurrentUser, Db, MailerDep, RedisDep, SettingsDep
 from ..models import Attachment, Category, Project, Tag, Task, TaskAttributeMeta, User
 from ..schemas import (
@@ -15,7 +15,7 @@ from ..schemas import (
     DeleteAccountRequest,
     DeleteCodeChallengeResponse,
 )
-from ..security import enforce_rate_limit, hash_password, require_csrf_guard, verify_password
+from ..security import enforce_rate_limit, hash_password, verify_password
 from ..sessions import revoke_user_sessions
 from ..storage import remove_attachments
 
@@ -25,8 +25,8 @@ router = APIRouter(prefix="/user", tags=["user"])
 async def _limit_password_attempts(redis, settings, user_id: int) -> None:
     """Свой счётчик попыток на пользователя для проверок пароля.
 
-    Общий лимит refresh по IP этого не заменяет: он считает совсем другие
-    запросы, а перебор текущего пароля идёт из уже авторизованной сессии.
+    Лимиты входа по IP этого не заменяют: они считают другие запросы, а перебор
+    текущего пароля идёт из уже авторизованной сессии.
     """
     await enforce_rate_limit(
         redis,
@@ -173,11 +173,7 @@ async def export_user_data(
     }
 
 
-@router.post(
-    "/change-password",
-    status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_csrf_guard)],
-)
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
 async def change_password(
     payload: ChangePasswordRequest,
     response: Response,
@@ -186,7 +182,7 @@ async def change_password(
     redis: RedisDep,
     settings: SettingsDep,
 ):
-    """Смена пароля отзывает все сессии: оставшиеся access-токены и открытые
+    """Смена пароля отзывает все сессии: cookie в других браузерах и открытые
     SSE-потоки перестают давать доступ, требуется повторный вход."""
     await _limit_password_attempts(redis, settings, user.id)
     if not await verify_password(user.hashed_password, payload.current_password):
@@ -203,14 +199,13 @@ async def change_password(
     audit.add_audit(db, audit.PASSWORD_CHANGED, user_id=user.id)
     await db.commit()
 
-    clear_refresh_cookie(response, settings)
+    clear_session_cookie(response, settings)
 
 
 @router.post(
     "/delete-code",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=DeleteCodeChallengeResponse,
-    dependencies=[Depends(require_csrf_guard)],
 )
 async def request_delete_code(
     request: Request,
@@ -243,11 +238,7 @@ async def request_delete_code(
     }
 
 
-@router.delete(
-    "/me",
-    status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_csrf_guard)],
-)
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_account(
     payload: DeleteAccountRequest,
     response: Response,
@@ -296,4 +287,4 @@ async def delete_account(
     # оставить их у удалённого. Ошибка уборки не отменяет удаление аккаунта.
     await remove_attachments(settings, stored_names)
 
-    clear_refresh_cookie(response, settings)
+    clear_session_cookie(response, settings)

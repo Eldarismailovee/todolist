@@ -8,7 +8,7 @@ from app.config import get_settings
 from app.main import app
 from app.redis_client import user_channel
 
-from .conftest import bearer, create_project, fresh_access, register, set_metadata
+from .conftest import create_project, register, set_metadata
 
 settings = get_settings()
 # Справочник описывает дополнительные поля; заголовок задачи — колонка.
@@ -38,7 +38,6 @@ async def test_foreign_project_id_gives_404_and_publishes_nothing(client, redis_
             response = await intruder.post(
                 "/api/v1/tasks",
                 json={"project_id": project_id, "title": "Чужая"},
-                headers=bearer(await fresh_access(intruder)),
             )
             await asyncio.sleep(0.2)
             messages = []
@@ -50,9 +49,7 @@ async def test_foreign_project_id_gives_404_and_publishes_nothing(client, redis_
     # Событие владельцу не публикуется: задача не создана.
     assert messages == []
 
-    listing = await client.get(
-        f"/api/v1/tasks?project_id={project_id}", headers=bearer(await fresh_access(client))
-    )
+    listing = await client.get(f"/api/v1/tasks?project_id={project_id}")
     assert listing.json() == []
 
 
@@ -62,12 +59,9 @@ async def test_foreign_project_is_invisible(client):
 
     async with new_client() as other:
         await register(other, "b@example.com")
-        token = await fresh_access(other)
-        direct = await other.get(f"/api/v1/projects/{project_id}", headers=bearer(token))
-        listing = await other.get("/api/v1/projects", headers=bearer(await fresh_access(other)))
-        tasks = await other.get(
-            f"/api/v1/tasks?project_id={project_id}", headers=bearer(await fresh_access(other))
-        )
+        direct = await other.get(f"/api/v1/projects/{project_id}")
+        listing = await other.get("/api/v1/projects")
+        tasks = await other.get(f"/api/v1/tasks?project_id={project_id}")
 
     assert direct.status_code == 404
     assert listing.json() == []
@@ -82,7 +76,6 @@ async def test_foreign_task_cannot_be_modified(client):
         await client.post(
             "/api/v1/tasks",
             json={"project_id": project_id, "title": "Моя"},
-            headers=bearer(await fresh_access(client)),
         )
     ).json()["id"]
 
@@ -91,18 +84,13 @@ async def test_foreign_task_cannot_be_modified(client):
         patched = await other.patch(
             f"/api/v1/tasks/{task_id}",
             json={"title": "Взломано"},
-            headers=bearer(await fresh_access(other)),
         )
-        deleted = await other.request(
-            "DELETE", f"/api/v1/tasks/{task_id}", headers=bearer(await fresh_access(other))
-        )
+        deleted = await other.request("DELETE", f"/api/v1/tasks/{task_id}")
 
     assert patched.status_code == 404
     assert deleted.status_code == 404
 
-    listing = await client.get(
-        f"/api/v1/tasks?project_id={project_id}", headers=bearer(await fresh_access(client))
-    )
+    listing = await client.get(f"/api/v1/tasks?project_id={project_id}")
     assert listing.json()[0]["title"] == "Моя"
 
 
@@ -112,7 +100,6 @@ async def test_attribute_meta_write_requires_admin(client):
     response = await client.post(
         "/api/v1/admin/task-attributes",
         json={"code": "hacked", "title": "X", "type": "string", "is_required": False},
-        headers=bearer(await fresh_access(client)),
     )
 
     assert response.status_code == 403
