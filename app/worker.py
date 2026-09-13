@@ -21,7 +21,7 @@ from .db import SessionLocal, engine
 from .integrations.mail import Mailer, create_mailer
 from .integrations.telegram import TelegramSender, create_telegram_sender
 from .logging_config import configure_logging
-from .models import NotificationPrefs, Project, Task, TaskNotification, User
+from .models import NotificationPrefs, Project, RefreshToken, Task, TaskNotification, User
 
 logger = logging.getLogger(__name__)
 
@@ -192,10 +192,28 @@ async def run_once() -> int:
     return sent
 
 
+async def purge_expired_refresh_tokens() -> int:
+    """Убрать записи refresh, которые уже не нужны для обнаружения повтора.
+
+    Строка создаётся на каждый обмен, то есть на каждый защищённый запрос
+    клиента, и без уборки таблица растёт неограниченно. Удаляются только
+    записи старше срока хранения — до этого момента погашенный токен обязан
+    находиться, иначе его повторное предъявление не будет распознано.
+    """
+    settings = get_settings()
+    cutoff = datetime.now(UTC) - timedelta(seconds=settings.refresh_retention_seconds)
+    async with SessionLocal() as db:
+        result = await db.execute(delete(RefreshToken).where(RefreshToken.expires_at < cutoff))
+        await db.commit()
+    return result.rowcount or 0
+
+
 async def main() -> None:
     configure_logging()
     settings = get_settings()
     stopping = asyncio.Event()
+    # Уборка идёт в том же процессе, но реже рассылки: она не срочная.
+    next_cleanup = 0.0
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -210,6 +228,20 @@ async def main() -> None:
                     logger.info("Отправлено напоминаний: %s", sent)
             except Exception:  # noqa: BLE001 — цикл переживает единичный сбой
                 logger.exception("Проход воркера завершился ошибкой")
+
+            if asyncio.get_running_loop().time() >= next_cleanup:
+                next_cleanup = (
+                    asyncio.get_running_loop().time() + settings.refresh_cleanup_interval_seconds
+                )
+                try:
+                    removed = await purge_expired_refresh_tokens()
+                    # Число в журнале — единственная метрика роста таблицы,
+                    # которая здесь есть: постоянно большое значение означает,
+                    # что срок хранения или частота обменов выбраны неверно.
+                    logger.info("Удалено просроченных записей refresh: %s", removed)
+                except Exception:  # noqa: BLE001 — уборка не должна ронять рассылку
+                    logger.exception("Уборка записей refresh завершилась ошибкой")
+
             try:
                 await asyncio.wait_for(stopping.wait(), timeout=settings.notification_poll_seconds)
             except TimeoutError:

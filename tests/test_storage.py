@@ -35,6 +35,34 @@ async def _upload(client, name: str = "dot.png"):
     )
 
 
+@pytest.mark.parametrize(
+    ("content_type", "payload", "expected"),
+    [
+        ("image/png", PNG, 201),
+        ("image/gif", b"GIF89a" + b"\x00" * 32, 201),
+        ("image/jpeg", b"\xff\xd8\xff\xe0" + b"\x00" * 32, 201),
+        ("image/webp", b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 16, 201),
+        ("image/svg+xml", b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>', 201),
+        # Заголовок клиента типом файла не является: под видом картинки
+        # сохранялось бы произвольное содержимое, а отдавалось с image/*.
+        ("image/png", b"<html><script>alert(1)</script></html>", 415),
+        # MZ — начало исполняемого файла Windows, не SVG.
+        ("image/svg+xml", b"MZ\x90\x00\x03\x00\x00\x00", 415),
+        ("image/jpeg", PNG, 415),
+    ],
+)
+async def test_upload_checks_the_actual_format(client, content_type, payload, expected):
+    await register(client, f"format{abs(hash((content_type, expected)))}@example.com", PASSWORD)
+
+    response = await client.post(
+        "/api/v1/files",
+        files={"file": ("file", io.BytesIO(payload), content_type)},
+        headers=bearer(await fresh_access(client)),
+    )
+
+    assert response.status_code == expected, response.text
+
+
 async def test_account_deletion_removes_attachment_bytes(client, db_session):
     """Каскад убирает строки attachments; байты должен убрать обработчик."""
     await register(client, "delete-files@example.com", PASSWORD)

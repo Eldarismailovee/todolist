@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..attachments import sign_url, verify_signature
 from ..config import Settings
 from ..dependencies import CurrentPrincipal, Db, OptionalPrincipal, SettingsDep
+from ..images import matches_declared_type
 from ..models import Attachment
 from ..schemas import AttachmentResponse
 from ..storage import find_attachment, remove_attachments, write_attachment
@@ -96,6 +97,16 @@ async def upload_file(
     if total == 0:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Пустой файл")
 
+    payload = b"".join(chunks)
+    # Заголовок клиента типом файла не является: расширение на диске и
+    # Content-Type выдачи выбираются по нему, поэтому расхождение означало бы
+    # выдачу произвольного содержимого под видом картинки.
+    if not matches_declared_type(file.content_type, payload):
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            f"Содержимое файла не похоже на {file.content_type}",
+        )
+
     stored_name = f"{secrets.token_urlsafe(24)}{EXTENSIONS.get(file.content_type, '')}"
 
     attachment = Attachment(
@@ -108,7 +119,7 @@ async def upload_file(
     db.add(attachment)
     # Строка создаётся до записи байтов: отказ БД тогда не оставляет файла.
     await db.flush()
-    await write_attachment(settings, stored_name, b"".join(chunks))
+    await write_attachment(settings, stored_name, payload)
 
     result = AttachmentResponse(
         id=str(attachment.id),

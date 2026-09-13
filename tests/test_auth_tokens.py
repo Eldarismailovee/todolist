@@ -248,3 +248,36 @@ async def test_current_user_endpoint(client):
     assert body["email"] == "whoami@example.com"
     assert body["is_admin"] is False
     assert "hashed_password" not in body
+
+
+async def test_retention_removes_only_records_beyond_the_window(client):
+    """Записи растут на каждый запрос, но погашенный токен нужен для reuse."""
+    from sqlalchemy import func, select
+
+    from app.models import RefreshToken
+    from app.worker import purge_expired_refresh_tokens
+
+    await register(client, "retention@example.com")
+    await fresh_access(client)
+
+    async with SessionLocal() as session:
+        before = await session.scalar(select(func.count()).select_from(RefreshToken))
+    assert before >= 2
+
+    # Свежие записи уборка не трогает: они ещё в окне обнаружения повтора.
+    assert await purge_expired_refresh_tokens() == 0
+
+    async with SessionLocal() as session:
+        await session.execute(
+            text(
+                "UPDATE refresh_tokens SET expires_at = now() - "
+                f"interval '{settings.refresh_retention_seconds + 3600} seconds'"
+            )
+        )
+        await session.commit()
+
+    removed = await purge_expired_refresh_tokens()
+
+    assert removed == before
+    async with SessionLocal() as session:
+        assert await session.scalar(select(func.count()).select_from(RefreshToken)) == 0

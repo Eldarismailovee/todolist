@@ -346,7 +346,11 @@ class RefreshToken(Base):
     issued_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Индексируется для уборки: записи удаляются пачкой по сроку, а таблица
+    # растёт на каждый защищённый запрос клиента.
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

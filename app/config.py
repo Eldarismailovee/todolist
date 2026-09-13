@@ -157,6 +157,14 @@ class Settings(BaseSettings):
     notification_poll_seconds: int = 60
     notification_batch_size: int = 200
 
+    # --- Хранение записей refresh ----------------------------------------
+    # Строка создаётся на каждый обмен refresh, то есть на каждый защищённый
+    # запрос клиента: без уборки таблица растёт неограниченно. Срок хранения
+    # не может быть короче абсолютного срока сессии — иначе обнаружение
+    # повторного использования перестало бы работать в пределах живой сессии.
+    refresh_retention_seconds: int = Field(default=7 * 24 * 3600, ge=3600, le=90 * 24 * 3600)
+    refresh_cleanup_interval_seconds: int = Field(default=3600, ge=60, le=24 * 3600)
+
     # --- Лимиты данных ---------------------------------------------------
     max_attributes: int = 64
     max_attribute_string_length: int = 2_000
@@ -187,6 +195,17 @@ class Settings(BaseSettings):
     def max_upload_body_bytes(self) -> int:
         """Лимит тела для загрузки файла: сам файл плюс обвязка multipart."""
         return self.max_upload_bytes + self.multipart_overhead_bytes
+
+    @model_validator(mode="after")
+    def _check_refresh_retention(self) -> "Settings":
+        """Уборка не должна опережать обнаружение повторного использования."""
+        if self.refresh_retention_seconds < self.session_absolute_ttl_seconds:
+            raise ValueError(
+                f"REFRESH_RETENTION_SECONDS={self.refresh_retention_seconds} меньше срока "
+                f"сессии ({self.session_absolute_ttl_seconds}): погашенный токен исчезал бы "
+                "раньше, чем сессия перестанет действовать"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_body_limits(self) -> "Settings":
