@@ -37,8 +37,14 @@ def generate_code(settings: Settings) -> str:
     return str(secrets.randbelow(upper)).zfill(settings.otp_length)
 
 
-def hash_code(settings: Settings, email: str, code: str) -> str:
-    message = f"{email.lower()}:{code}".encode()
+def hash_code(settings: Settings, subject: str, code: str) -> str:
+    """HMAC кода вместе с адресатом.
+
+    Адресат — обычно email, но не обязательно: код подтверждения Telegram-чата
+    привязывается к пользователю тем же способом. Без адресата в сообщении один
+    и тот же код давал бы одинаковый хеш для разных получателей.
+    """
+    message = f"{subject.lower()}:{code}".encode()
     return hmac.new(settings.secret_key.get_secret_value().encode(), message, sha256).hexdigest()
 
 

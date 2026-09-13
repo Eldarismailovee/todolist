@@ -1,7 +1,13 @@
 import { useId, useRef, useState } from 'react';
 
-import { useNotificationPrefs, useSaveNotificationPrefs } from '../api/queries';
-import type { NotificationPrefs } from '../api/types';
+import {
+  useConfirmTelegram,
+  useLinkTelegram,
+  useNotificationPrefs,
+  useSaveNotificationPrefs,
+  useUnlinkTelegram,
+} from '../api/queries';
+import type { NotificationPrefs, NotificationPrefsUpdate } from '../api/types';
 import { fieldRoot, invalidProps } from '../lib/fields';
 import { api, describeError, fieldErrors } from '../lib/http';
 import { useAuthStore } from '../stores/authStore';
@@ -22,10 +28,14 @@ export const SettingsPanel = () => {
   const userId = user?.id ?? 0;
   const prefs = useNotificationPrefs(userId);
   const save = useSaveNotificationPrefs(userId);
+  const linkTelegram = useLinkTelegram();
+  const confirmTelegram = useConfirmTelegram(userId);
+  const unlinkTelegram = useUnlinkTelegram(userId);
 
   const emailId = useId();
   const telegramId = useId();
   const chatId = useId();
+  const codeId = useId();
   const leadId = useId();
 
   // Черновик появляется только после первой правки: до этого показываем то,
@@ -35,11 +45,17 @@ export const SettingsPanel = () => {
   const [testState, setTestState] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const inputs = useRef<Record<string, HTMLElement | null>>({});
+  // Черновик подключения чата: номер вводится, потом в чат приходит код.
+  const [chatDraft, setChatDraft] = useState('');
+  const [code, setCode] = useState('');
 
   const form = draft ?? prefs.data ?? DEFAULTS;
   const setForm = setDraft;
+  const linkedChatId = prefs.data?.telegram_chat_id ?? null;
+  const codeSent = linkTelegram.isSuccess && !linkedChatId;
+  const codeError = confirmTelegram.isError ? describeError(confirmTelegram.error) : undefined;
 
-  const shownFields = ['telegram_chat_id', 'lead_time_minutes'];
+  const shownFields = ['lead_time_minutes'];
   const otherErrors = Object.entries(errors).filter(
     ([path]) => !shownFields.includes(fieldRoot(path)),
   );
@@ -47,13 +63,35 @@ export const SettingsPanel = () => {
   async function submit() {
     setErrors({});
     try {
-      await save.mutateAsync(form);
+      const body: NotificationPrefsUpdate = {
+        email_enabled: form.email_enabled,
+        telegram_enabled: form.telegram_enabled,
+        lead_time_minutes: form.lead_time_minutes,
+      };
+      await save.mutateAsync(body);
     } catch (error) {
       const fields = fieldErrors(error);
       setErrors(fields);
       const first = shownFields.find((name) => fields[name]);
       if (first) inputs.current[first]?.focus();
     }
+  }
+
+  async function sendCode() {
+    await linkTelegram.mutateAsync(chatDraft.trim());
+  }
+
+  async function confirmCode() {
+    await confirmTelegram.mutateAsync(code.trim());
+    setCode('');
+    setChatDraft('');
+    setDraft(null);
+  }
+
+  async function unlink() {
+    await unlinkTelegram.mutateAsync();
+    setDraft(null);
+    linkTelegram.reset();
   }
 
   async function sendTest() {
@@ -92,36 +130,101 @@ export const SettingsPanel = () => {
             id={telegramId}
             type="checkbox"
             checked={form.telegram_enabled}
+            disabled={linkedChatId === null}
             onChange={(event) => setForm({ ...form, telegram_enabled: event.target.checked })}
-            className="h-5 w-5 rounded accent-indigo-600"
+            className="h-5 w-5 rounded accent-indigo-600 disabled:opacity-50"
           />
         </div>
 
-        {form.telegram_enabled && (
-          <div className="space-y-1.5">
-            <label
-              htmlFor={chatId}
-              className="text-xs font-medium text-gray-500 dark:text-gray-400"
-            >
-              Telegram chat ID
-            </label>
-            <input
-              id={chatId}
-              ref={(element) => {
-                inputs.current.telegram_chat_id = element;
-              }}
-              inputMode="numeric"
-              value={form.telegram_chat_id ?? ''}
-              onChange={(event) =>
-                setForm({ ...form, telegram_chat_id: event.target.value || null })
-              }
-              className={field}
-              {...invalidProps(chatId, errors.telegram_chat_id)}
-            />
-            <FieldError id={`${chatId}-error`} message={errors.telegram_chat_id} />
+        {/*
+          Подключение чата — не поле формы: номер, введённый в настройках, не
+          доказывает, что чат принадлежит этому пользователю. Сервер шлёт код
+          в указанный чат, и подключение засчитывается, только если код вернули.
+        */}
+        {linkedChatId !== null ? (
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              Напишите боту команду /start — он ответит вашим chat ID.
+              Чат подключён: <span className="font-medium">{linkedChatId}</span>
             </p>
+            <button
+              type="button"
+              onClick={() => void unlink()}
+              disabled={unlinkTelegram.isPending}
+              className="rounded-xl border border-gray-200 px-3 py-1.5 text-xs transition-all hover:bg-gray-100 disabled:opacity-60 dark:border-gray-800 dark:hover:bg-gray-800"
+            >
+              Отключить чат
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3 rounded-xl border border-dashed border-gray-300 p-3 dark:border-gray-700">
+            <div className="space-y-1.5">
+              <label
+                htmlFor={chatId}
+                className="text-xs font-medium text-gray-500 dark:text-gray-400"
+              >
+                Telegram chat ID
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <input
+                  id={chatId}
+                  inputMode="numeric"
+                  value={chatDraft}
+                  placeholder="123456789"
+                  onChange={(event) => setChatDraft(event.target.value)}
+                  className={`${field} flex-1`}
+                />
+                <button
+                  type="button"
+                  onClick={() => void sendCode()}
+                  disabled={linkTelegram.isPending || chatDraft.trim().length === 0}
+                  className="rounded-xl border border-gray-200 px-3 py-2 text-sm transition-all hover:bg-gray-100 disabled:opacity-60 dark:border-gray-800 dark:hover:bg-gray-800"
+                >
+                  Прислать код
+                </button>
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Напишите боту команду /start — он ответит вашим chat ID. Код придёт в этот чат.
+              </p>
+              {linkTelegram.isError && (
+                <p role="alert" className="text-xs text-red-500">
+                  {describeError(linkTelegram.error)}
+                </p>
+              )}
+            </div>
+
+            {codeSent && (
+              <div className="space-y-1.5">
+                <label
+                  htmlFor={codeId}
+                  className="text-xs font-medium text-gray-500 dark:text-gray-400"
+                >
+                  Код из чата
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    id={codeId}
+                    inputMode="numeric"
+                    value={code}
+                    onChange={(event) => setCode(event.target.value)}
+                    className={`${field} flex-1`}
+                    {...invalidProps(codeId, codeError)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void confirmCode()}
+                    disabled={confirmTelegram.isPending || code.trim().length === 0}
+                    className="rounded-xl bg-indigo-600 px-3 py-2 text-sm font-medium text-white transition-all hover:bg-indigo-500 disabled:opacity-60"
+                  >
+                    Подтвердить
+                  </button>
+                </div>
+                {codeError && (
+                  <p id={`${codeId}-error`} role="alert" className="text-xs text-red-500">
+                    {codeError}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
 

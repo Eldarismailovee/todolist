@@ -501,6 +501,70 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/notifications/telegram/link': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Link Telegram
+     * @description Отправить код подтверждения в указанный чат.
+     *
+     *     Введённое число само по себе ничего не доказывает: с ним можно было бы
+     *     подписать чужой чат на свои уведомления. Прочитать код может только тот,
+     *     у кого есть доступ к этому чату.
+     */
+    post: operations['link_telegram_api_v1_notifications_telegram_link_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications/telegram/confirm': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Confirm Telegram
+     * @description Подтвердить чат кодом и включить доставку в него.
+     */
+    post: operations['confirm_telegram_api_v1_notifications_telegram_confirm_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications/telegram': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /**
+     * Unlink Telegram
+     * @description Отключить чат. Повторное подключение снова требует подтверждения.
+     */
+    delete: operations['unlink_telegram_api_v1_notifications_telegram_delete'];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/notifications/test': {
     parameters: {
       query?: never;
@@ -965,7 +1029,10 @@ export interface components {
       /** Title */
       title: string;
     };
-    /** NotificationPrefsSchema */
+    /**
+     * NotificationPrefsSchema
+     * @description Ответ с настройками. `telegram_chat_id` задаёт сервер после подтверждения.
+     */
     NotificationPrefsSchema: {
       /**
        * Email Enabled
@@ -979,6 +1046,30 @@ export interface components {
       telegram_enabled: boolean;
       /** Telegram Chat Id */
       telegram_chat_id?: string | null;
+      /**
+       * Lead Time Minutes
+       * @default 60
+       */
+      lead_time_minutes: number;
+    };
+    /**
+     * NotificationPrefsUpdate
+     * @description Что клиент вправе менять сам.
+     *
+     *     `telegram_chat_id` в тело не входит: чат подключается только через
+     *     подтверждение кодом, иначе в настройки можно было бы записать чужой чат.
+     */
+    NotificationPrefsUpdate: {
+      /**
+       * Email Enabled
+       * @default true
+       */
+      email_enabled: boolean;
+      /**
+       * Telegram Enabled
+       * @default false
+       */
+      telegram_enabled: boolean;
       /**
        * Lead Time Minutes
        * @default 60
@@ -1199,6 +1290,30 @@ export interface components {
       };
       /** Completed */
       completed?: boolean;
+    };
+    /** TelegramConfirmRequest */
+    TelegramConfirmRequest: {
+      /** Code */
+      code: string;
+    };
+    /**
+     * TelegramLinkChallenge
+     * @description Код отправлен в указанный чат.
+     */
+    TelegramLinkChallenge: {
+      /**
+       * Code Sent
+       * @default true
+       * @constant
+       */
+      code_sent: true;
+      /** Expires In */
+      expires_in: number;
+    };
+    /** TelegramLinkRequest */
+    TelegramLinkRequest: {
+      /** Chat Id */
+      chat_id: string;
     };
     /** ValidationError */
     ValidationError: {
@@ -2246,7 +2361,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['NotificationPrefsSchema'];
+        'application/json': components['schemas']['NotificationPrefsUpdate'];
       };
     };
     responses: {
@@ -2266,6 +2381,92 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  link_telegram_api_v1_notifications_telegram_link_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TelegramLinkRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TelegramLinkChallenge'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  confirm_telegram_api_v1_notifications_telegram_confirm_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TelegramConfirmRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['NotificationPrefsSchema'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  unlink_telegram_api_v1_notifications_telegram_delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['NotificationPrefsSchema'];
         };
       };
     };

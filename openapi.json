@@ -1698,7 +1698,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NotificationPrefsSchema"
+                "$ref": "#/components/schemas/NotificationPrefsUpdate"
               }
             }
           },
@@ -1721,6 +1721,127 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notifications/telegram/link": {
+      "post": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Link Telegram",
+        "description": "Отправить код подтверждения в указанный чат.\n\nВведённое число само по себе ничего не доказывает: с ним можно было бы\nподписать чужой чат на свои уведомления. Прочитать код может только тот,\nу кого есть доступ к этому чату.",
+        "operationId": "link_telegram_api_v1_notifications_telegram_link_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelegramLinkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramLinkChallenge"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notifications/telegram/confirm": {
+      "post": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Confirm Telegram",
+        "description": "Подтвердить чат кодом и включить доставку в него.",
+        "operationId": "confirm_telegram_api_v1_notifications_telegram_confirm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelegramConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPrefsSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notifications/telegram": {
+      "delete": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Unlink Telegram",
+        "description": "Отключить чат. Повторное подключение снова требует подтверждения.",
+        "operationId": "unlink_telegram_api_v1_notifications_telegram_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPrefsSchema"
                 }
               }
             }
@@ -2786,7 +2907,33 @@
         },
         "additionalProperties": false,
         "type": "object",
-        "title": "NotificationPrefsSchema"
+        "title": "NotificationPrefsSchema",
+        "description": "Ответ с настройками. `telegram_chat_id` задаёт сервер после подтверждения."
+      },
+      "NotificationPrefsUpdate": {
+        "properties": {
+          "email_enabled": {
+            "type": "boolean",
+            "title": "Email Enabled",
+            "default": true
+          },
+          "telegram_enabled": {
+            "type": "boolean",
+            "title": "Telegram Enabled",
+            "default": false
+          },
+          "lead_time_minutes": {
+            "type": "integer",
+            "maximum": 10080.0,
+            "minimum": 5.0,
+            "title": "Lead Time Minutes",
+            "default": 60
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NotificationPrefsUpdate",
+        "description": "Что клиент вправе менять сам.\n\n`telegram_chat_id` в тело не входит: чат подключается только через\nподтверждение кодом, иначе в настройки можно было бы записать чужой чат."
       },
       "OAuthProvidersResponse": {
         "properties": {
@@ -3422,6 +3569,58 @@
         "type": "object",
         "title": "TaskUpdate",
         "description": "Частичное обновление: поле меняется, только если явно передано.\n\n`attributes` заменяются целиком — JSONB присваивается новым словарём.\n\nNull принимается только там, где очистка значения осмысленна: описание,\nсодержимое, срок, колонка и категория. Для заголовка, тегов, атрибутов и\nпризнака выполнения null операцией не является — раньше он молча\nигнорировался, и клиент не мог отличить его от применённого изменения."
+      },
+      "TelegramConfirmRequest": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 12,
+            "minLength": 4,
+            "title": "Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "TelegramConfirmRequest"
+      },
+      "TelegramLinkChallenge": {
+        "properties": {
+          "code_sent": {
+            "type": "boolean",
+            "const": true,
+            "title": "Code Sent",
+            "default": true
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expires_in"
+        ],
+        "title": "TelegramLinkChallenge",
+        "description": "Код отправлен в указанный чат."
+      },
+      "TelegramLinkRequest": {
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "pattern": "^-?[0-9]{1,32}$",
+            "title": "Chat Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "chat_id"
+        ],
+        "title": "TelegramLinkRequest"
       },
       "ValidationError": {
         "properties": {

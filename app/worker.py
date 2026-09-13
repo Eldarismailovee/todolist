@@ -12,6 +12,7 @@ import logging
 import signal
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from html import escape
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -78,7 +79,10 @@ async def _deliver(mailer: Mailer, telegram: TelegramSender, reminder: _Reminder
             logger.warning("Письмо о задаче %s не отправлено: %s", reminder.task_id, error)
 
     if reminder.chat_id:
-        message = f"<b>{reminder.subject}</b>\n{reminder.body}"
+        # Заголовок задачи пишет пользователь, а сообщение уходит с
+        # parse_mode=HTML: без экранирования «<» ломает разметку, и Telegram
+        # отвергает сообщение целиком.
+        message = f"<b>{escape(reminder.subject)}</b>\n{escape(reminder.body)}"
         if await telegram.send(reminder.chat_id, message):
             channels.append("telegram")
 

@@ -12,6 +12,7 @@ import type {
   CurrentUser,
   MetaField,
   NotificationPrefs,
+  NotificationPrefsUpdate,
   Project,
   Tag,
   Task,
@@ -270,8 +271,43 @@ export function useUpdateColumn(userId: number, projectId: number) {
 export function useSaveNotificationPrefs(userId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (prefs: NotificationPrefs): Promise<NotificationPrefs> =>
+    mutationFn: async (prefs: NotificationPrefsUpdate): Promise<NotificationPrefs> =>
       (await api.put<NotificationPrefs>('/notifications/settings', prefs)).data,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.notifications(userId) });
+    },
+  });
+}
+
+/**
+ * Подключение Telegram идёт в два шага: сервер отправляет код в указанный чат,
+ * пользователь возвращает его. Введённый номер сам по себе ничего не
+ * доказывает — с ним можно было бы подписать чужой чат.
+ */
+export function useLinkTelegram() {
+  return useMutation({
+    mutationFn: async (chatId: string): Promise<void> => {
+      await api.post('/notifications/telegram/link', { chat_id: chatId });
+    },
+  });
+}
+
+export function useConfirmTelegram(userId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (code: string): Promise<NotificationPrefs> =>
+      (await api.post<NotificationPrefs>('/notifications/telegram/confirm', { code })).data,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.notifications(userId) });
+    },
+  });
+}
+
+export function useUnlinkTelegram(userId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (): Promise<NotificationPrefs> =>
+      (await api.delete<NotificationPrefs>('/notifications/telegram')).data,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.notifications(userId) });
     },

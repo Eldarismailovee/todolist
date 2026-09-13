@@ -13,6 +13,8 @@ export type Tag = components['schemas']['TagResponse'];
 export type Category = components['schemas']['CategoryResponse'];
 export type Attachment = components['schemas']['AttachmentResponse'];
 export type NotificationPrefs = components['schemas']['NotificationPrefsSchema'];
+/** Что клиент вправе менять сам: чат подключается только подтверждением кода. */
+export type NotificationPrefsUpdate = components['schemas']['NotificationPrefsUpdate'];
 export type Analytics = components['schemas']['AnalyticsResponse'];
 export type AssistAction = components['schemas']['AssistRequest']['action'];
 export type AssistResult = components['schemas']['AssistResponse'];

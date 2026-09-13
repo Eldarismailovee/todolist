@@ -517,8 +517,7 @@ async def test_notification_settings_round_trip(client):
         "/api/v1/notifications/settings",
         json={
             "email_enabled": True,
-            "telegram_enabled": True,
-            "telegram_chat_id": "123456789",
+            "telegram_enabled": False,
             "lead_time_minutes": 120,
         },
         headers=bearer(await fresh_access(client)),
@@ -529,19 +528,127 @@ async def test_notification_settings_round_trip(client):
     assert updated.json()["lead_time_minutes"] == 120
 
 
-async def test_telegram_requires_chat_id(client):
+async def test_chat_id_cannot_be_set_through_settings(client):
+    """Чат — не поле формы: иначе в настройки записывался бы чужой чат."""
     await register(client, "notg@example.com")
+
     response = await client.put(
         "/api/v1/notifications/settings",
         json={
             "email_enabled": True,
-            "telegram_enabled": True,
-            "telegram_chat_id": None,
+            "telegram_enabled": False,
+            "telegram_chat_id": "123456789",
             "lead_time_minutes": 60,
         },
         headers=bearer(await fresh_access(client)),
     )
+
     assert response.status_code == 422
+
+
+async def test_telegram_cannot_be_enabled_without_a_confirmed_chat(client):
+    await register(client, "notg2@example.com")
+
+    response = await client.put(
+        "/api/v1/notifications/settings",
+        json={"email_enabled": True, "telegram_enabled": True, "lead_time_minutes": 60},
+        headers=bearer(await fresh_access(client)),
+    )
+
+    assert response.status_code == 422
+
+
+def _last_telegram_code() -> str:
+    """Код из сообщения, ушедшего в заглушку Telegram."""
+    from app.main import app
+
+    text = app.state.telegram.outbox[-1].text
+    return next(part for part in text.split() if part.isdigit())
+
+
+async def test_telegram_chat_is_confirmed_by_a_code_sent_into_it(client):
+    """Введённое число — не доказательство владения чатом; код в чате — да."""
+    await register(client, "tg-link@example.com")
+    chat_id = "123456789"
+
+    issued = await client.post(
+        "/api/v1/notifications/telegram/link",
+        json={"chat_id": chat_id},
+        headers=bearer(await fresh_access(client)),
+    )
+    assert issued.status_code == 202, issued.text
+
+    # До подтверждения чат в настройках не появляется.
+    before = await client.get(
+        "/api/v1/notifications/settings", headers=bearer(await fresh_access(client))
+    )
+    assert before.json()["telegram_chat_id"] is None
+
+    wrong = await client.post(
+        "/api/v1/notifications/telegram/confirm",
+        json={"code": "000000"},
+        headers=bearer(await fresh_access(client)),
+    )
+    assert wrong.status_code == 403
+
+    confirmed = await client.post(
+        "/api/v1/notifications/telegram/confirm",
+        json={"code": _last_telegram_code()},
+        headers=bearer(await fresh_access(client)),
+    )
+
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["telegram_chat_id"] == chat_id
+    assert confirmed.json()["telegram_enabled"] is True
+
+
+async def test_confirmation_code_is_single_use(client):
+    await register(client, "tg-replay@example.com")
+    await client.post(
+        "/api/v1/notifications/telegram/link",
+        json={"chat_id": "987654321"},
+        headers=bearer(await fresh_access(client)),
+    )
+    code = _last_telegram_code()
+
+    first = await client.post(
+        "/api/v1/notifications/telegram/confirm",
+        json={"code": code},
+        headers=bearer(await fresh_access(client)),
+    )
+    await client.delete(
+        "/api/v1/notifications/telegram", headers=bearer(await fresh_access(client))
+    )
+    replay = await client.post(
+        "/api/v1/notifications/telegram/confirm",
+        json={"code": code},
+        headers=bearer(await fresh_access(client)),
+    )
+
+    assert first.status_code == 200
+    assert replay.status_code == 403
+
+
+async def test_unlinking_the_chat_disables_delivery(client):
+    await register(client, "tg-unlink@example.com")
+    await client.post(
+        "/api/v1/notifications/telegram/link",
+        json={"chat_id": "555000111"},
+        headers=bearer(await fresh_access(client)),
+    )
+    await client.post(
+        "/api/v1/notifications/telegram/confirm",
+        json={"code": _last_telegram_code()},
+        headers=bearer(await fresh_access(client)),
+    )
+
+    unlinked = await client.delete(
+        "/api/v1/notifications/telegram", headers=bearer(await fresh_access(client))
+    )
+
+    assert unlinked.status_code == 200
+    assert unlinked.json()["telegram_chat_id"] is None
+    assert unlinked.json()["telegram_enabled"] is False
 
 
 async def test_worker_sends_reminder_once(client):

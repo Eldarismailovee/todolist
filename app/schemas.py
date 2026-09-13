@@ -399,15 +399,54 @@ class AttachmentResponse(BaseModel):
     size_bytes: int
 
 
+TelegramChatId = Annotated[str, StringConstraints(strict=True, pattern=r"^-?[0-9]{1,32}$")]
+LeadTimeMinutes = Annotated[int, Field(strict=True, ge=5, le=10_080)]
+
+
 class NotificationPrefsSchema(BaseModel):
+    """Ответ с настройками. `telegram_chat_id` задаёт сервер после подтверждения."""
+
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 
     email_enabled: StrictBool = True
     telegram_enabled: StrictBool = False
-    telegram_chat_id: (
-        Annotated[str, StringConstraints(strict=True, pattern=r"^-?[0-9]{1,32}$")] | None
-    ) = None
-    lead_time_minutes: Annotated[int, Field(strict=True, ge=5, le=10_080)] = 60
+    telegram_chat_id: TelegramChatId | None = None
+    lead_time_minutes: LeadTimeMinutes = 60
+
+
+class NotificationPrefsUpdate(BaseModel):
+    """Что клиент вправе менять сам.
+
+    `telegram_chat_id` в тело не входит: чат подключается только через
+    подтверждение кодом, иначе в настройки можно было бы записать чужой чат.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    email_enabled: StrictBool = True
+    telegram_enabled: StrictBool = False
+    lead_time_minutes: LeadTimeMinutes = 60
+
+
+class TelegramLinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chat_id: TelegramChatId
+
+
+class TelegramLinkChallenge(BaseModel):
+    """Код отправлен в указанный чат."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code_sent: Literal[True] = True
+    expires_in: int
+
+
+class TelegramConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: Annotated[str, StringConstraints(strict=True, min_length=4, max_length=12)]
 
 
 class AssistRequest(BaseModel):

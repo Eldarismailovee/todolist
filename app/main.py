@@ -1,7 +1,7 @@
 """Точка входа FastAPI. Все маршруты монтируются с общим префиксом /api/v1."""
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, Request, status
@@ -39,7 +39,7 @@ settings = get_settings()
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Клиенты внешних сервисов создаются при старте и закрываются при остановке."""
     logger.info("Среда: %s", settings.environment)
     if settings.uses_default_secret_key:
