@@ -22,6 +22,21 @@ from ..storage import remove_attachments
 router = APIRouter(prefix="/user", tags=["user"])
 
 
+async def _limit_password_attempts(redis, settings, user_id: int) -> None:
+    """Свой счётчик попыток на пользователя для проверок пароля.
+
+    Общий лимит refresh по IP этого не заменяет: он считает совсем другие
+    запросы, а перебор текущего пароля идёт из уже авторизованной сессии.
+    """
+    await enforce_rate_limit(
+        redis,
+        settings,
+        f"password:{user_id}",
+        settings.login_rate_limit,
+        settings.login_rate_window_seconds,
+    )
+
+
 @router.get("/me", response_model=CurrentUserResponse)
 async def read_current_user(response: Response, user: CurrentUser):
     """Кто вошёл: клиенту нужен id для ключей кэша и разделения аккаунтов."""
@@ -168,10 +183,12 @@ async def change_password(
     response: Response,
     user: CurrentUser,
     db: Db,
+    redis: RedisDep,
     settings: SettingsDep,
 ):
     """Смена пароля отзывает все сессии: оставшиеся access-токены и открытые
     SSE-потоки перестают давать доступ, требуется повторный вход."""
+    await _limit_password_attempts(redis, settings, user.id)
     if not await verify_password(user.hashed_password, payload.current_password):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Неверный текущий пароль")
     if len(payload.new_password) < settings.password_min_length:
@@ -236,6 +253,7 @@ async def delete_account(
     response: Response,
     user: CurrentUser,
     db: Db,
+    redis: RedisDep,
     settings: SettingsDep,
 ):
     """Удаление аккаунта: подтверждение личности, отзыв сессий, каскад.
@@ -243,6 +261,9 @@ async def delete_account(
     Обработку резервных копий и журналов нужно согласовать с политикой хранения:
     один DELETE из `users` не реализует весь процесс.
     """
+    # Число попыток подтверждения ограничено на пользователя: и пароль, и код
+    # здесь — секрет, который можно перебирать из действующей сессии.
+    await _limit_password_attempts(redis, settings, user.id)
     if payload.password is not None:
         # Аккаунту без пароля пароль подтверждением быть не может: сравнение с
         # фиктивным хешем всё равно вернёт отказ, и это правильный ответ.

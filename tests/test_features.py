@@ -461,6 +461,33 @@ async def test_analytics_counts_tasks_and_completion(client):
     assert sum(point["created"] for point in body["daily"]) == 3
 
 
+async def test_analytics_first_day_starts_at_midnight(client):
+    """Граница диапазона — начало дня, а не «столько же времени назад».
+
+    Задача, созданная сегодня ночью, попадает в сегодняшний столбец: при
+    отсчёте от текущего времени суток она выпадала из выборки, хотя её дата
+    в диапазоне.
+    """
+    await register(client, "stats-midnight@example.com")
+    project_id = await create_project(client)
+    task = await create_task(client, project_id, "Ночная")
+
+    midnight = datetime.now(UTC).replace(hour=0, minute=1, second=0, microsecond=0)
+    async with SessionLocal() as session:
+        await session.execute(update(Task).where(Task.id == task["id"]).values(created_at=midnight))
+        await session.commit()
+
+    body = (
+        await client.get(
+            "/api/v1/analytics/summary?days=1", headers=bearer(await fresh_access(client))
+        )
+    ).json()
+
+    assert len(body["daily"]) == 1
+    assert body["daily"][0]["date"] == midnight.date().isoformat()
+    assert body["daily"][0]["created"] == 1
+
+
 async def test_analytics_ignores_other_users(client):
     from .test_isolation import new_client
 

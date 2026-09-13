@@ -28,7 +28,6 @@ from .config import Settings
 from .models import Attachment
 
 FILE_PATH = re.compile(r"^/api/v1/files/([0-9a-fA-F-]{36})(?:\?.*)?$")
-SIGNED_URL_TTL = 3600
 
 
 def _signature(settings: Settings, attachment_id: str, expires_at: int) -> str:
@@ -37,8 +36,11 @@ def _signature(settings: Settings, attachment_id: str, expires_at: int) -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
-def sign_url(settings: Settings, attachment_id: str, ttl: int = SIGNED_URL_TTL) -> str:
-    expires_at = int(time.time()) + ttl
+def sign_url(settings: Settings, attachment_id: str, ttl: int | None = None) -> str:
+    # Срок берётся из настроек: константа в коде подписи прятала его от
+    # общего обзора сроков жизни credentials.
+    lifetime = ttl if ttl is not None else settings.attachment_url_ttl_seconds
+    expires_at = int(time.time()) + lifetime
     signature = _signature(settings, attachment_id, expires_at)
     return f"/api/v1/files/{attachment_id}?exp={expires_at}&sig={signature}"
 

@@ -45,8 +45,13 @@ class Settings(BaseSettings):
     allowed_origin: str = Field(default="http://localhost:5173")
 
     # --- Токены и сессии -------------------------------------------------
-    token_ttl_seconds: int = 300
-    session_absolute_ttl_seconds: int = 12 * 3600
+    # Сроки разделены по назначению: одно значение на все credentials создавало
+    # видимость правила «всё живёт пять минут», которого на деле не было —
+    # OTP, state и ссылки на файлы всегда жили дольше. Границы заданы явно,
+    # чтобы окружение не могло тихо превратить короткий токен в долгий.
+    access_token_ttl_seconds: int = Field(default=300, ge=30, le=900)
+    refresh_token_ttl_seconds: int = Field(default=300, ge=60, le=24 * 3600)
+    session_absolute_ttl_seconds: int = Field(default=12 * 3600, ge=300, le=30 * 24 * 3600)
     sse_stream_seconds: int = 240
     sse_revocation_check_seconds: int = 5
 
@@ -70,7 +75,8 @@ class Settings(BaseSettings):
 
     # --- Одноразовые коды (OTP) ------------------------------------------
     otp_length: int = 6
-    otp_ttl_seconds: int = 600
+    # Код вводит человек из письма: минуты, а не секунды, но и не часы.
+    otp_ttl_seconds: int = Field(default=600, ge=60, le=1800)
     otp_max_attempts: int = 5
     # Запросов кода на один адрес за окно: иначе почтой можно завалить чужой ящик.
     otp_request_limit: int = 5
@@ -98,7 +104,7 @@ class Settings(BaseSettings):
     github_emails_url: str = "https://api.github.com/user/emails"
     # Время на один переход к провайдеру и обратно. Тот же срок живёт cookie,
     # связывающая state с браузером, поэтому запас держится небольшим.
-    oauth_state_ttl_seconds: int = 300
+    oauth_state_ttl_seconds: int = Field(default=300, ge=60, le=900)
 
     # --- Почта -----------------------------------------------------------
     # Без smtp_host письма пишутся в лог: локальная разработка не требует
@@ -130,6 +136,10 @@ class Settings(BaseSettings):
 
     # --- Загрузка файлов -------------------------------------------------
     upload_dir: str = "var/uploads"
+    # Ссылка на картинку живёт дольше access-токена намеренно: её открывает
+    # тег <img> при каждом показе задачи. Значение задано здесь, а не константой
+    # в коде подписи, чтобы срок был виден вместе с остальными.
+    attachment_url_ttl_seconds: int = Field(default=3600, ge=60, le=24 * 3600)
     max_upload_bytes: int = 5 * 1024 * 1024
     # Границы, заголовки частей и имя файла идут в теле поверх самого файла.
     # Общий лимит тела считает их вместе с содержимым, поэтому запас нужен

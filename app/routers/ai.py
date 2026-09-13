@@ -5,7 +5,7 @@ import logging
 import anthropic
 from fastapi import APIRouter, HTTPException, Request, status
 
-from ..dependencies import AssistantDep, CurrentPrincipal, RedisDep, SettingsDep
+from ..dependencies import AssistantDep, ExternalCallPrincipal, RedisDep, SettingsDep
 from ..integrations.ai import AssistantRefused
 from ..schemas import AssistRequest, AssistResponse
 from ..security import enforce_rate_limit
@@ -18,12 +18,16 @@ logger = logging.getLogger(__name__)
 async def assist(
     payload: AssistRequest,
     request: Request,
-    principal: CurrentPrincipal,
+    principal: ExternalCallPrincipal,
     assistant: AssistantDep,
     redis: RedisDep,
     settings: SettingsDep,
 ):
-    """Обращение к модели платное, поэтому лимит считается по пользователю."""
+    """Обращение к модели платное, поэтому лимит считается по пользователю.
+
+    Сессия проверяется короткой отдельной сессией БД: ожидание внешней
+    модели не должно удерживать SQL-соединение из пула.
+    """
     await enforce_rate_limit(
         redis,
         settings,

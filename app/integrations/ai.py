@@ -65,6 +65,9 @@ class Assistant:
     async def run(self, action: Action, text: str) -> AssistantReply:  # pragma: no cover
         raise NotImplementedError
 
+    async def aclose(self) -> None:
+        """Закрытие при остановке приложения. У заглушки закрывать нечего."""
+
 
 @dataclass
 class StubAssistant(Assistant):
@@ -104,6 +107,10 @@ class ClaudeAssistant(Assistant):
 
     def __post_init__(self) -> None:
         self._client = anthropic.AsyncAnthropic(api_key=self.settings.anthropic_api_key)
+
+    async def aclose(self) -> None:
+        """Клиент держит пул HTTP-соединений: его нужно закрыть явно."""
+        await self._client.close()
 
     async def run(self, action: Action, text: str) -> AssistantReply:
         response = await self._client.messages.create(

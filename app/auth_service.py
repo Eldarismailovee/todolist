@@ -52,7 +52,7 @@ def _new_refresh(db: AsyncSession, settings: Settings, session_id: UUID) -> str:
         RefreshToken(
             token_hash=refresh_hash(raw),
             session_id=session_id,
-            expires_at=utcnow() + timedelta(seconds=settings.token_ttl_seconds),
+            expires_at=utcnow() + timedelta(seconds=settings.refresh_token_ttl_seconds),
         )
     )
     return raw
@@ -91,7 +91,7 @@ async def _finalize(
     return IssuedTokens(
         access_token=access,
         refresh_token=refresh_raw,
-        expires_in=settings.token_ttl_seconds,
+        expires_in=settings.access_token_ttl_seconds,
         user_id=user_id,
         session_id=session_id,
     )

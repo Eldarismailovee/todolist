@@ -2,6 +2,7 @@
 
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.db import SessionLocal
 from app.models import User
 
@@ -41,6 +42,27 @@ async def test_deleting_a_password_account_requires_the_password(client):
     assert right.status_code == 204, right.text
     async with SessionLocal() as session:
         assert await session.scalar(select(User).where(User.email == email)) is None
+
+
+async def test_password_checks_are_rate_limited_per_user(client):
+    """Перебор текущего пароля идёт из авторизованной сессии.
+
+    Общий лимит refresh по IP такие попытки не считает вовсе.
+    """
+    await register(client, "brute-force@example.com", PASSWORD)
+    settings = get_settings()
+
+    codes = []
+    for _ in range(settings.login_rate_limit + 2):
+        response = await client.post(
+            "/api/v1/user/change-password",
+            json={"current_password": "не тот пароль", "new_password": "длинный-новый-пароль"},
+            headers=bearer(await fresh_access(client)),
+        )
+        codes.append(response.status_code)
+
+    assert 403 in codes
+    assert codes[-1] == 429
 
 
 async def test_delete_request_needs_exactly_one_proof(client):

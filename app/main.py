@@ -54,6 +54,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await app.state.redis.aclose()
+        # Клиент модели держит собственный пул HTTP-соединений.
+        await app.state.assistant.aclose()
         await engine.dispose()
 
 

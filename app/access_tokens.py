@@ -46,7 +46,7 @@ async def issue_access_token(
     session_id: UUID,
     purpose: Purpose,
 ) -> str:
-    ttl = settings.token_ttl_seconds
+    ttl = settings.access_token_ttl_seconds
     principal = Principal(
         user_id=user_id,
         session_id=session_id,

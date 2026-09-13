@@ -62,7 +62,7 @@ def set_refresh_cookie(response: Response, settings: Settings, token: str) -> No
     response.set_cookie(
         key=refresh_cookie_name(settings),
         value=token,
-        max_age=settings.token_ttl_seconds,
+        max_age=settings.refresh_token_ttl_seconds,
         httponly=True,
         secure=settings.cookie_secure,
         samesite="strict",

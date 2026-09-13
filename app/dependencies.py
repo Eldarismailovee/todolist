@@ -69,6 +69,23 @@ async def get_api_principal(
     return principal
 
 
+async def get_external_call_principal(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    redis: Annotated[Redis, Depends(get_redis)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Principal:
+    """Как get_api_principal, но без сессии БД на всё время запроса.
+
+    Маршрут, который ждёт внешний сервис, не должен держать SQL-соединение из
+    пула: проверка сессии идёт в собственной короткой сессии и освобождает
+    соединение до внешнего вызова. Тот же приём уже используется для SSE.
+    """
+    principal = await _principal_from_header(credentials, redis, settings, "api")
+    if not await session_is_active(principal):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Сессия недействительна")
+    return principal
+
+
 async def get_sse_principal(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     redis: Annotated[Redis, Depends(get_redis)],
@@ -121,6 +138,7 @@ async def require_admin(user: Annotated[User, Depends(get_current_user)]) -> Use
 
 
 CurrentPrincipal = Annotated[Principal, Depends(get_api_principal)]
+ExternalCallPrincipal = Annotated[Principal, Depends(get_external_call_principal)]
 OptionalPrincipal = Annotated[Principal | None, Depends(get_optional_api_principal)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 AdminUser = Annotated[User, Depends(require_admin)]

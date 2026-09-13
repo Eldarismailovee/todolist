@@ -108,7 +108,7 @@ async def test_refresh_rotates_cookie_and_issues_new_access(client):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["expires_in"] == settings.token_ttl_seconds
+    assert body["expires_in"] == settings.access_token_ttl_seconds
     assert body["token_type"] == "Bearer"
     # Refresh token не возвращается в JSON.
     assert "refresh_token" not in body
