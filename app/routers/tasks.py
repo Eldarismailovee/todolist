@@ -15,11 +15,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from .. import events, idempotency, ordering
-from ..attachments import check_attachments, owned_attachments, sign_content, strip_signatures
+from ..attachments import check_attachments, normalise_paths
 from ..attributes import load_metadata, validate_or_422
+from ..board_service import (
+    apply_column_change,
+    check_neighbour_order,
+    check_neighbours,
+    lock_project_board,
+)
 from ..config import Settings
-from ..content import ContentError, extract_text
+from ..content import ContentError, extract_text, validate_document
 from ..dependencies import CurrentPrincipal, Db, RedisDep, SettingsDep
+from ..errors import field_error
 from ..models import BoardColumn, Category, Project, Tag, Task, TaskTag
 from ..schemas import TaskCreate, TaskMove, TaskResponse, TaskUpdate
 
@@ -58,7 +65,7 @@ async def _check_column(
         select(BoardColumn).where(BoardColumn.id == column_id, BoardColumn.project_id == project_id)
     )
     if column is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Колонка не найдена в проекте")
+        raise field_error(["column_id"], "Колонка не найдена в проекте")
     return column
 
 
@@ -69,7 +76,7 @@ async def _check_category(db: AsyncSession, category_id: int | None, user_id: in
         select(Category.id).where(Category.id == category_id, Category.owner_id == user_id)
     )
     if exists is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Категория не найдена")
+        raise field_error(["category_id"], "Категория не найдена")
 
 
 async def _resolve_tags(db: AsyncSession, tag_ids: list[int], user_id: int) -> list[Tag]:
@@ -80,15 +87,38 @@ async def _resolve_tags(db: AsyncSession, tag_ids: list[int], user_id: int) -> l
     ).all()
     if len(tags) != len(set(tag_ids)):
         # Чужой тег не должен молча исчезать из запроса.
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Тег не найден")
+        raise field_error(["tag_ids"], "Тег не найден")
     return list(tags)
+
+
+def _check_if_match(if_match: str | None, version: int) -> None:
+    """Условная запись по номеру версии задачи.
+
+    Значение сравнивается как есть и в виде ETag в кавычках: клиент вправе
+    прислать заголовок в стандартной форме. Несовпадение — 412, а не 409:
+    предусловие запроса не выполнено, само состояние задачи корректно.
+    """
+    if if_match is None:
+        return
+    presented = if_match.strip()
+    if presented.startswith("W/"):
+        presented = presented[2:]
+    presented = presented.strip('"')
+    if presented != str(version):
+        raise HTTPException(
+            status.HTTP_412_PRECONDITION_FAILED,
+            f"Задача изменена в другом месте: текущая версия {version}",
+        )
 
 
 def _content_text(content: dict | None) -> str | None:
     try:
+        # Сначала контракт документа, потом текст для поиска: обход по
+        # непроверенной структуре молча принял бы любые узлы и атрибуты.
+        validate_document(content)
         text = extract_text(content)
     except ContentError as error:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+        raise field_error(["content"], str(error)) from error
     return text or None
 
 
@@ -113,34 +143,18 @@ def _with_tags(statement: Select) -> Select:
 async def _responses(
     db: AsyncSession, settings: Settings, owner_id: int, tasks
 ) -> list[TaskResponse]:
-    """Ответы с подписанными ссылками на картинки.
+    """Ответы как есть.
 
-    В базе хранится «голый» путь: подпись живёт час и не должна попадать
-    в долговременное хранилище. Владелец вложений проверяется одним запросом
-    на всю выдачу — и для документов, сохранённых до этой проверки.
+    Ссылки на картинки — обычные пути `/api/v1/files/{id}`: выдача проверяет
+    владельца по сессии, поэтому подписывать их при каждом чтении не нужно.
     """
-    results = [TaskResponse.model_validate(task) for task in tasks]
-    owned = await owned_attachments(db, owner_id, [result.content for result in results])
-    for result in results:
-        result.content = sign_content(settings, result.content, owned)
-    return results
+    return [TaskResponse.model_validate(task) for task in tasks]
 
 
 async def _response(
     db: AsyncSession, settings: Settings, owner_id: int, task: Task
 ) -> TaskResponse:
     return (await _responses(db, settings, owner_id, [task]))[0]
-
-
-async def _replayed(db: AsyncSession, settings: Settings, owner_id: int, cached: dict) -> dict:
-    """Повтор по Idempotency-Key: подписи выпускаются заново.
-
-    Сохранённые в кэше живут час и к повтору могут истечь; заодно ответ,
-    записанный до проверки владельца, не отдаст чужую подписанную ссылку.
-    """
-    content = strip_signatures(cached.get("content"))
-    owned = await owned_attachments(db, owner_id, [content])
-    return {**cached, "content": sign_content(settings, content, owned)}
 
 
 @router.get("", response_model=list[TaskResponse])
@@ -258,7 +272,9 @@ async def create_task(
     if key is not None:
         replayed = await idempotency.begin(redis, settings, principal.user_id, key, fingerprint)
         if replayed is not None:
-            return await _replayed(db, settings, principal.user_id, replayed)
+            # Ответ отдаётся как записан: он больше не содержит подписей,
+            # которые могли истечь к моменту повтора.
+            return replayed
 
     try:
         project = await _owned_project(db, payload.project_id, principal.user_id)
@@ -280,13 +296,16 @@ async def create_task(
         attributes = validate_or_422(payload.attributes, metadata)
 
         owner_id = project.owner_id
+        # Позиция считается по максимуму в колонке: без блокировки две
+        # одновременные вставки получили бы одно значение.
+        await lock_project_board(db, project.id)
         task = Task(
             project_id=project.id,
             column_id=column.id if column else None,
             category_id=payload.category_id,
             title=payload.title,
             description=payload.description,
-            content=strip_signatures(payload.content),
+            content=normalise_paths(payload.content),
             content_text=_content_text(payload.content),
             due_at=payload.due_at,
             completed_at=datetime.now(UTC) if column and column.is_done_column else None,
@@ -328,18 +347,29 @@ async def update_task(
     db: Db,
     redis: RedisDep,
     settings: SettingsDep,
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ):
+    """Частичное обновление задачи.
+
+    `If-Match` с номером версии из последнего прочитанного ответа делает запись
+    условной: правка, сделанная на устаревшем снимке, отвергается вместо того,
+    чтобы молча затереть изменение из другой вкладки. Без заголовка проверки
+    нет — старые клиенты продолжают работать как прежде.
+    """
     task, owner_id = await _owned_task(db, task_id, principal.user_id)
+    _check_if_match(if_match, task.version)
     # exclude_unset: пропущенное поле и явный null — разные намерения.
     fields = payload.model_dump(exclude_unset=True)
 
-    if fields.get("title") is not None:
+    # Проверка на None больше не нужна: схема не пропускает null там, где
+    # очистка значения не является операцией.
+    if "title" in fields:
         task.title = fields["title"]
     if "description" in fields:
         task.description = fields["description"]
     if "content" in fields:
         await check_attachments(db, principal.user_id, fields["content"])
-        task.content = strip_signatures(fields["content"])
+        task.content = normalise_paths(fields["content"])
         task.content_text = _content_text(fields["content"])
     if "due_at" in fields:
         task.due_at = fields["due_at"]
@@ -348,14 +378,16 @@ async def update_task(
         task.category_id = fields["category_id"]
     if "column_id" in fields:
         column = await _check_column(db, fields["column_id"], task.project_id)
-        task.column_id = fields["column_id"]
-        if column is not None and column.is_done_column and task.completed_at is None:
-            task.completed_at = datetime.now(UTC)
-    if fields.get("completed") is not None:
+        # Одно правило на оба маршрута: раньше PATCH выставлял completed_at при
+        # переносе в «готово», но не снимал его при переносе обратно.
+        apply_column_change(task, column)
+    # Явный признак идёт после колонки: пользователь мог одним запросом
+    # перенести задачу и отметить её выполненной.
+    if "completed" in fields:
         task.completed_at = datetime.now(UTC) if fields["completed"] else None
-    if fields.get("tag_ids") is not None:
+    if "tag_ids" in fields:
         task.tags = await _resolve_tags(db, fields["tag_ids"], principal.user_id)
-    if fields.get("attributes") is not None:
+    if "attributes" in fields:
         metadata = await load_metadata(db)
         # JSONB присваивается новым словарём: изменение по месту SQLAlchemy не увидит.
         task.attributes = validate_or_422(fields["attributes"], metadata)
@@ -390,6 +422,10 @@ async def move_task(
     task, owner_id = await _owned_task(db, task_id, principal.user_id)
     column = await _check_column(db, payload.column_id, task.project_id)
     target_column_id = payload.column_id
+    check_neighbours(task_id, payload.before_id, payload.after_id)
+    # Соседи читаются, а позиция вычисляется и пишется отдельными запросами:
+    # без общей блокировки два перемещения выберут одно и то же значение.
+    await lock_project_board(db, task.project_id)
 
     async def neighbour_position(neighbour_id: int | None) -> float | None:
         if neighbour_id is None:
@@ -409,9 +445,10 @@ async def move_task(
 
     previous = await neighbour_position(payload.after_id)
     following = await neighbour_position(payload.before_id)
+    check_neighbour_order(previous, following)
     position = ordering.position_between(previous, following)
 
-    task.column_id = target_column_id
+    apply_column_change(task, column)
     if position is None:
         # Зазор между соседями исчерпан: перенумеровываем колонку и повторяем.
         siblings = (
@@ -430,11 +467,6 @@ async def move_task(
         position = ordering.position_between(previous, following) or ordering.STEP
 
     task.position = position
-    if column is not None:
-        # Колонка «готово» и обратно — единственный способ закрыть задачу мышью.
-        task.completed_at = (
-            (task.completed_at or datetime.now(UTC)) if column.is_done_column else None
-        )
 
     await db.flush()
     await db.refresh(task, attribute_names=["updated_at"])

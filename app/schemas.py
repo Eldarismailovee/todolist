@@ -12,6 +12,7 @@ from functools import lru_cache
 from typing import Annotated, Any, Literal
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -22,6 +23,7 @@ from pydantic import (
     StringConstraints,
     create_model,
     field_validator,
+    model_validator,
 )
 
 from .config import get_settings
@@ -75,6 +77,21 @@ class OtpChallengeResponse(BaseModel):
     expires_in: int
 
 
+class DeleteCodeChallengeResponse(BaseModel):
+    """Код подтверждения удаления аккаунта отправлен.
+
+    Отдельный тип, а не расширение OtpChallengeResponse: цель этого кода не
+    входит в допустимые значения /auth/otp/verify, и контракт входа не должен
+    объявлять её как возможный ответ.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    otp_required: Literal[True] = True
+    purpose: Literal["delete_account"] = "delete_account"
+    expires_in: int
+
+
 class OtpVerifyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -89,22 +106,6 @@ class OAuthProvidersResponse(BaseModel):
     providers: list[Literal["google", "github"]]
 
 
-class RefreshRequest(BaseModel):
-    """`user_id` клиент не передаёт: он берётся из серверной записи сессии."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    purpose: Literal["api", "sse"]
-
-
-class AccessTokenResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    access_token: str
-    expires_in: int
-    token_type: Literal["Bearer"] = "Bearer"
-
-
 class CurrentUserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -113,7 +114,9 @@ class CurrentUserResponse(BaseModel):
     is_admin: bool
     display_name: str | None = None
     avatar_url: str | None = None
-    has_password: bool = True
+    # Значения по умолчанию у этого поля быть не должно: оно вычисляется из
+    # модели, а умолчание скрывало отсутствие свойства.
+    has_password: bool
     created_at: datetime
 
 
@@ -125,11 +128,29 @@ class ChangePasswordRequest(BaseModel):
 
 
 class DeleteAccountRequest(BaseModel):
-    """Повторное подтверждение личности для чувствительной операции."""
+    """Повторное подтверждение личности для чувствительной операции.
+
+    Пароль есть не у всех: аккаунт, созданный через OAuth, иначе невозможно
+    удалить вовсе. Для него подтверждением служит одноразовый код на
+    подтверждённый адрес, запрошенный отдельно и привязанный к этому действию.
+    Пропускать проверку для OAuth-аккаунтов нельзя: удаление данных должно
+    требовать свежего подтверждения личности.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    password: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=512)]
+    password: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=512)] = Field(
+        default=None
+    )
+    code: Annotated[str, StringConstraints(strict=True, min_length=4, max_length=12)] = Field(
+        default=None
+    )
+
+    @model_validator(mode="after")
+    def exactly_one_proof(self) -> "DeleteAccountRequest":
+        if (self.password is None) == (self.code is None):
+            raise ValueError("Нужен ровно один способ подтверждения: password или code")
+        return self
 
 
 # --- Проекты -------------------------------------------------------------
@@ -172,6 +193,21 @@ def _content_byte_limit(value: dict | None) -> dict | None:
     return value
 
 
+def require_datetime_string(value: Any) -> Any:
+    """Момент времени передаётся строкой ISO-8601, а не числом.
+
+    Число Pydantic принял бы как Unix timestamp и подставил бы UTC, то есть
+    отсутствие зоны у клиента превратилось бы в молчаливое допущение сервера.
+    """
+    if not isinstance(value, str):
+        raise ValueError("Ожидается ISO-строка даты и времени с часовым поясом")
+    return value
+
+
+# Срок задачи всегда с зоной: naive-значение в БД истолковывается по её
+# настройкам, и «18:00» пользователя из другого часового пояса уезжает.
+DueAt = Annotated[AwareDatetime, BeforeValidator(require_datetime_string)]
+
 TaskTitle = Annotated[
     str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=255)
 ]
@@ -186,7 +222,7 @@ class TaskCreate(BaseModel):
     description: Annotated[str, StringConstraints(strict=True, max_length=10_000)] | None = None
     # Документ Tiptap как есть; текст для поиска извлекает сервер.
     content: dict[str, Any] | None = None
-    due_at: datetime | None = None
+    due_at: DueAt | None = None
     column_id: PositiveId | None = None
     category_id: PositiveId | None = None
     tag_ids: Annotated[list[PositiveId], Field(max_length=32)] = Field(default_factory=list)
@@ -207,24 +243,29 @@ class TaskUpdate(BaseModel):
     """Частичное обновление: поле меняется, только если явно передано.
 
     `attributes` заменяются целиком — JSONB присваивается новым словарём.
+
+    Null принимается только там, где очистка значения осмысленна: описание,
+    содержимое, срок, колонка и категория. Для заголовка, тегов, атрибутов и
+    признака выполнения null операцией не является — раньше он молча
+    игнорировался, и клиент не мог отличить его от применённого изменения.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    title: TaskTitle | None = None
+    title: TaskTitle = Field(default=None)
     description: Annotated[str, StringConstraints(strict=True, max_length=10_000)] | None = None
     content: dict[str, Any] | None = None
-    due_at: datetime | None = None
+    due_at: DueAt | None = None
     column_id: PositiveId | None = None
     category_id: PositiveId | None = None
-    tag_ids: Annotated[list[PositiveId], Field(max_length=32)] | None = None
-    attributes: Attributes | None = None
-    completed: StrictBool | None = None
+    tag_ids: Annotated[list[PositiveId], Field(max_length=32)] = Field(default=None)
+    attributes: Attributes = Field(default=None)
+    completed: StrictBool = Field(default=None)
 
     @field_validator("attributes")
     @classmethod
-    def check_attributes_size(cls, value: dict | None) -> dict | None:
-        return None if value is None else _attributes_byte_limit(value)
+    def check_attributes_size(cls, value: dict) -> dict:
+        return _attributes_byte_limit(value)
 
     @field_validator("content")
     @classmethod
@@ -267,6 +308,9 @@ class TaskResponse(BaseModel):
     tags: list[TagResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+    # Номер прочитанного состояния: клиент возвращает его в If-Match, чтобы
+    # его правка не затёрла более новое изменение.
+    version: int
 
 
 class BoardColumnCreate(BaseModel):
@@ -339,15 +383,54 @@ class AttachmentResponse(BaseModel):
     size_bytes: int
 
 
+TelegramChatId = Annotated[str, StringConstraints(strict=True, pattern=r"^-?[0-9]{1,32}$")]
+LeadTimeMinutes = Annotated[int, Field(strict=True, ge=5, le=10_080)]
+
+
 class NotificationPrefsSchema(BaseModel):
+    """Ответ с настройками. `telegram_chat_id` задаёт сервер после подтверждения."""
+
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 
     email_enabled: StrictBool = True
     telegram_enabled: StrictBool = False
-    telegram_chat_id: (
-        Annotated[str, StringConstraints(strict=True, pattern=r"^-?[0-9]{1,32}$")] | None
-    ) = None
-    lead_time_minutes: Annotated[int, Field(strict=True, ge=5, le=10_080)] = 60
+    telegram_chat_id: TelegramChatId | None = None
+    lead_time_minutes: LeadTimeMinutes = 60
+
+
+class NotificationPrefsUpdate(BaseModel):
+    """Что клиент вправе менять сам.
+
+    `telegram_chat_id` в тело не входит: чат подключается только через
+    подтверждение кодом, иначе в настройки можно было бы записать чужой чат.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    email_enabled: StrictBool = True
+    telegram_enabled: StrictBool = False
+    lead_time_minutes: LeadTimeMinutes = 60
+
+
+class TelegramLinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chat_id: TelegramChatId
+
+
+class TelegramLinkChallenge(BaseModel):
+    """Код отправлен в указанный чат."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code_sent: Literal[True] = True
+    expires_in: int
+
+
+class TelegramConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: Annotated[str, StringConstraints(strict=True, min_length=4, max_length=12)]
 
 
 class AssistRequest(BaseModel):

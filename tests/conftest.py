@@ -66,7 +66,6 @@ TABLES = (
     "oauth_accounts",
     "otp_codes",
     "audit_events",
-    "refresh_tokens",
     "auth_sessions",
     "tasks",
     "projects",
@@ -218,6 +217,13 @@ async def db_session():
 
 OTP_CODE = "424242"
 
+# Наименьший корректный PNG: тестам нужны настоящие байты изображения.
+PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+    "890000000a49444154789c6360000002000100ffff03000006000557bfabd400"
+    "00000049454e44ae426082"
+)
+
 
 async def plant_otp(email: str, purpose: str, code: str = OTP_CODE) -> None:
     """Подменяет код у последнего непогашенного запроса на известный тесту.
@@ -251,7 +257,7 @@ async def plant_otp(email: str, purpose: str, code: str = OTP_CODE) -> None:
 
 
 async def register(http: AsyncClient, email: str, password: str = "correct-horse-battery") -> str:
-    """Регистрация с подтверждением кодом; возвращает первый access token."""
+    """Регистрация с подтверждением кодом. Дальше клиент ходит с cookie сессии."""
     started = await http.post("/api/v1/auth/register", json={"email": email, "password": password})
     assert started.status_code == 202, started.text
     await plant_otp(email, "register")
@@ -261,11 +267,11 @@ async def register(http: AsyncClient, email: str, password: str = "correct-horse
         json={"email": email, "code": OTP_CODE, "purpose": "register"},
     )
     assert verified.status_code == 200, verified.text
-    return verified.json()["access_token"]
+    return verified.json()["email"]
 
 
 async def login(http: AsyncClient, email: str, password: str = "correct-horse-battery") -> str:
-    """Вход с подтверждением кодом."""
+    """Вход с подтверждением кодом. Сессию устанавливает cookie в ответе."""
     started = await http.post("/api/v1/auth/login", json={"email": email, "password": password})
     assert started.status_code == 202, started.text
     await plant_otp(email, "login")
@@ -275,24 +281,12 @@ async def login(http: AsyncClient, email: str, password: str = "correct-horse-ba
         json={"email": email, "code": OTP_CODE, "purpose": "login"},
     )
     assert verified.status_code == 200, verified.text
-    return verified.json()["access_token"]
-
-
-async def fresh_access(http: AsyncClient, purpose: str = "api") -> str:
-    """Одноразовый токен: перед каждым защищённым запросом нужен свой."""
-    response = await http.post("/api/v1/auth/refresh", json={"purpose": purpose})
-    assert response.status_code == 200, response.text
-    return response.json()["access_token"]
-
-
-def bearer(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+    # Дальше клиент авторизуется cookie: токенов в ответе больше нет.
+    return verified.json()["email"]
 
 
 async def create_project(http: AsyncClient, title: str = "Проект") -> int:
-    response = await http.post(
-        "/api/v1/projects", json={"title": title}, headers=bearer(await fresh_access(http))
-    )
+    response = await http.post("/api/v1/projects", json={"title": title})
     assert response.status_code == 201, response.text
     return response.json()["id"]
 
@@ -302,7 +296,6 @@ async def create_task(http: AsyncClient, project_id: int, title: str = "Зада
     response = await http.post(
         "/api/v1/tasks",
         json={"project_id": project_id, "title": title, **fields},
-        headers=bearer(await fresh_access(http)),
     )
     assert response.status_code == 201, response.text
     return response.json()

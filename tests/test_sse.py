@@ -1,17 +1,13 @@
-"""SSE: авторизация заголовком, персональный канал и отзыв сессии в потоке."""
+"""SSE: авторизация сессионной cookie, персональный канал и отзыв в потоке."""
 
 import asyncio
 import json
-import time
 
-from app.access_tokens import access_key
 from app.config import get_settings
 from app.redis_client import user_channel
 
 from .conftest import (
-    bearer,
     create_project,
-    fresh_access,
     live_client,
     register,
     set_metadata,
@@ -42,15 +38,12 @@ async def test_stream_delivers_owner_events_only(worker_client, workers, redis_c
     await register(worker_client, "streamer@example.com")
     await set_metadata(METADATA)
     project_id = await create_project(worker_client)
-    token = await fresh_access(worker_client, "sse")
 
     async with live_client(workers[1]) as other:
         # Второй пользователь подключён к другому воркеру.
         await register(other, "bystander@example.com")
 
-        async with worker_client.stream(
-            "GET", "/api/v1/tasks/stream", headers=bearer(token)
-        ) as response:
+        async with worker_client.stream("GET", "/api/v1/tasks/stream") as response:
             assert response.status_code == 200
             assert response.headers["content-type"].startswith("text/event-stream")
             assert response.headers["cache-control"] == "no-store"
@@ -67,7 +60,6 @@ async def test_stream_delivers_owner_events_only(worker_client, workers, redis_c
                 created = await worker_client.post(
                     "/api/v1/tasks",
                     json={"project_id": project_id, "title": "Новая"},
-                    headers=bearer(await fresh_access(worker_client)),
                 )
                 assert created.status_code == 201
 
@@ -93,60 +85,37 @@ async def test_update_and_delete_events(worker_client):
         await worker_client.post(
             "/api/v1/tasks",
             json={"project_id": project_id, "title": "Задача"},
-            headers=bearer(await fresh_access(worker_client)),
         )
     ).json()["id"]
-    token = await fresh_access(worker_client, "sse")
 
-    async with worker_client.stream(
-        "GET", "/api/v1/tasks/stream", headers=bearer(token)
-    ) as response:
+    async with worker_client.stream("GET", "/api/v1/tasks/stream") as response:
         lines = response.aiter_lines()
         assert (await read_event(lines))[0] == "ready"
 
         await worker_client.patch(
             f"/api/v1/tasks/{task_id}",
             json={"title": "Изменено"},
-            headers=bearer(await fresh_access(worker_client)),
         )
         assert (await read_event(lines))[0] == "task_updated"
 
-        await worker_client.request(
-            "DELETE", f"/api/v1/tasks/{task_id}", headers=bearer(await fresh_access(worker_client))
-        )
+        await worker_client.request("DELETE", f"/api/v1/tasks/{task_id}")
         assert (await read_event(lines))[0] == "task_deleted"
 
 
-async def test_sse_token_cannot_be_replayed(worker_client):
-    await register(worker_client, "replay@example.com")
-    token = await fresh_access(worker_client, "sse")
+async def test_stream_can_be_reopened_with_the_same_session(worker_client):
+    """Отдельного одноразового токена для подключения больше нет."""
+    await register(worker_client, "reopen@example.com")
 
-    async with worker_client.stream("GET", "/api/v1/tasks/stream", headers=bearer(token)) as first:
-        assert first.status_code == 200
-        assert (await read_event(first.aiter_lines()))[0] == "ready"
-
-    second = await worker_client.get("/api/v1/tasks/stream", headers=bearer(token))
-    assert second.status_code == 401
-
-    # Новый токен снова позволяет подключиться.
-    async with worker_client.stream(
-        "GET", "/api/v1/tasks/stream", headers=bearer(await fresh_access(worker_client, "sse"))
-    ) as third:
-        assert third.status_code == 200
+    for _ in range(2):
+        async with worker_client.stream("GET", "/api/v1/tasks/stream") as response:
+            assert response.status_code == 200
+            assert (await read_event(response.aiter_lines()))[0] == "ready"
 
 
-async def test_stream_refuses_token_that_expires_too_soon(worker_client, redis_client):
-    """Соединение не должно переживать собственный access token."""
-    await register(worker_client, "soon@example.com")
-    token = await fresh_access(worker_client, "sse")
+async def test_stream_without_session_is_rejected(worker_client):
+    worker_client.cookies.clear()
 
-    key = access_key(settings, token)
-    record = json.loads(await redis_client.get(key))
-    # До истечения остаётся меньше 30 секунд — подключаться уже нельзя.
-    record["expires_at"] = int(time.time()) + 10
-    await redis_client.set(key, json.dumps(record), ex=300)
-
-    response = await worker_client.get("/api/v1/tasks/stream", headers=bearer(token))
+    response = await worker_client.get("/api/v1/tasks/stream")
 
     assert response.status_code == 401
 
@@ -154,11 +123,8 @@ async def test_stream_refuses_token_that_expires_too_soon(worker_client, redis_c
 async def test_logout_ends_open_stream(worker_client):
     """Отзыв сессии проверяется в работающем потоке, а не только при входе."""
     await register(worker_client, "revoke@example.com")
-    token = await fresh_access(worker_client, "sse")
 
-    async with worker_client.stream(
-        "GET", "/api/v1/tasks/stream", headers=bearer(token)
-    ) as response:
+    async with worker_client.stream("GET", "/api/v1/tasks/stream") as response:
         lines = response.aiter_lines()
         assert (await read_event(lines))[0] == "ready"
 

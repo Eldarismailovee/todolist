@@ -1,13 +1,17 @@
-"""Служебные команды: первый администратор и наполнение справочника атрибутов.
+"""Служебные команды: первый администратор, справочник атрибутов, выгрузка контракта.
 
 uv run python -m app.cli create-admin admin@example.com 'длинный-пароль'
 uv run python -m app.cli grant-admin admin@example.com
 uv run python -m app.cli seed-attributes
+uv run python -m app.cli export-openapi
 """
 
 import argparse
 import asyncio
+import json
+import os
 import sys
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -15,6 +19,10 @@ from .config import get_settings
 from .db import SessionLocal, engine
 from .models import TaskAttributeMeta, User
 from .security import hash_password
+
+# openapi.json лежит рядом с pyproject.toml, а не в рабочем каталоге вызова.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+OPENAPI_PATH = REPO_ROOT / "openapi.json"
 
 # Справочник описывает ДОПОЛНИТЕЛЬНЫЕ поля. Заголовок, срок и признак
 # выполнения — обычные колонки задачи, дублировать их здесь нельзя: обязательный
@@ -64,6 +72,25 @@ async def seed_attributes() -> None:
     print("Справочник атрибутов заполнен")
 
 
+def export_openapi(destination: Path) -> None:
+    """Записать контракт текущего кода в файл.
+
+    Выгрузка обязана зависеть только от исходников, иначе проверка дрейфа
+    в CI ловит настройки разработчика. Локальный .env обычно включает
+    ENABLE_TESTING_ENDPOINTS, а в production этих маршрутов нет — значит,
+    в опубликованном контракте их тоже быть не должно.
+    """
+    os.environ["ENABLE_TESTING_ENDPOINTS"] = "false"
+    get_settings.cache_clear()
+
+    # Импорт после правки окружения: app.main читает настройки на импорте.
+    from .main import app
+
+    document = json.dumps(app.openapi(), indent=2, ensure_ascii=False) + "\n"
+    destination.write_text(document, encoding="utf-8")
+    print(f"Контракт выгружен: {destination}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="app.cli")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -77,7 +104,15 @@ def main() -> None:
 
     commands.add_parser("seed-attributes", help="заполнить справочник атрибутов примером")
 
+    export = commands.add_parser("export-openapi", help="выгрузить OpenAPI текущего кода")
+    export.add_argument("--output", type=Path, default=OPENAPI_PATH)
+
     args = parser.parse_args()
+
+    # Команда работает без базы и Redis, событийный цикл ей не нужен.
+    if args.command == "export-openapi":
+        export_openapi(args.output)
+        return
 
     async def run() -> None:
         try:

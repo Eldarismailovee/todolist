@@ -1,9 +1,19 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
-import { useCategories, useCreateTag, useTags, useUpdateTask } from '../api/queries';
-import type { RichDocument, Task } from '../api/types';
-import { describeError } from '../lib/http';
+import {
+  useAttributeMeta,
+  useCategories,
+  useCreateTag,
+  useTags,
+  useUpdateTask,
+} from '../api/queries';
+import type { AttributeValue, RichDocument, Task } from '../api/types';
+import type { AttributeDraft } from '../lib/fields';
+import { attributesDraft, attributesPayload, fieldRoot, invalidProps } from '../lib/fields';
+import { describeError, fieldErrors } from '../lib/http';
 import { AiAssistant } from './AiAssistant';
+import { AttributeFields } from './AttributeFields';
+import { FieldError } from './FieldError';
 import { RichTextEditor } from './RichTextEditor';
 
 interface Props {
@@ -14,6 +24,13 @@ interface Props {
 
 const field =
   'w-full rounded-xl border border-transparent bg-gray-100 px-3 py-2 text-sm transition-all outline-none focus:border-indigo-500 dark:bg-gray-800';
+
+/**
+ * Поля формы, у которых есть собственное место для ошибки. Порядок совпадает
+ * с визуальным: после отказа фокус уходит к первому неверному полю.
+ */
+const FOCUSABLE_FIELDS = ['title', 'due_at', 'category_id', 'description'] as const;
+const SHOWN_FIELDS = new Set<string>([...FOCUSABLE_FIELDS, 'content', 'tag_ids', 'attributes']);
 
 /** `datetime-local` понимает только «YYYY-MM-DDTHH:mm» в местной зоне. */
 function toLocalInput(iso: string | null): string {
@@ -38,11 +55,24 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
   const [category, setCategory] = useState<number | null>(task.category_id);
   const [tagIds, setTagIds] = useState<number[]>((task.tags ?? []).map((tag) => tag.id));
   const [newTag, setNewTag] = useState('');
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const inputs = useRef<Record<string, HTMLElement | null>>({});
 
   const tags = useTags(userId);
   const categories = useCategories(userId);
+  const attributeMeta = useAttributeMeta();
   const createTag = useCreateTag(userId);
   const update = useUpdateTask(userId);
+
+  const metaFields = attributeMeta.data ?? [];
+  // Черновик появляется после первой правки: до этого показываются сохранённые
+  // значения. Эффект синхронизации затирал бы ввод при фоновом обновлении.
+  const [attributeDraft, setAttributeDraft] = useState<AttributeDraft | null>(null);
+  const attributeValues = attributeDraft ?? attributesDraft(metaFields, task.attributes);
+
+  function setAttribute(code: string, value: AttributeValue | null) {
+    setAttributeDraft({ ...attributeValues, [code]: value });
+  }
 
   // Esc закрывает диалог: без клавиатуры модальное окно недоступно.
   useEffect(() => {
@@ -54,20 +84,57 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
   }, [onClose]);
 
   async function save() {
-    await update.mutateAsync({
-      id: task.id,
-      patch: {
-        title: title.trim() || task.title,
-        description: description.trim() || null,
-        content,
-        // Локальное время приводим к ISO с зоной, иначе сервер получит смещение.
-        due_at: dueAt ? new Date(dueAt).toISOString() : null,
-        category_id: category,
-        tag_ids: tagIds,
-      },
-    });
-    onClose();
+    setErrors({});
+    try {
+      await update.mutateAsync({
+        id: task.id,
+        // Версия того состояния, которое сейчас открыто в диалоге: правка
+        // поверх более нового изменения будет отвергнута, а не применена.
+        version: task.version,
+        patch: {
+          title: title.trim() || task.title,
+          description: description.trim() || null,
+          content,
+          // Локальное время приводим к ISO с зоной, иначе сервер получит смещение.
+          due_at: dueAt ? new Date(dueAt).toISOString() : null,
+          category_id: category,
+          tag_ids: tagIds,
+          ...(metaFields.length > 0
+            ? { attributes: attributesPayload(metaFields, attributeValues) }
+            : {}),
+        },
+      });
+      onClose();
+    } catch (error) {
+      // Отказ mutateAsync обязателен к обработке: без catch он становится
+      // необработанным rejection, а диалог закрывался бы как при успехе.
+      const fields = fieldErrors(error);
+      setErrors(fields);
+      const first = FOCUSABLE_FIELDS.find((name) => fields[name]);
+      if (first) inputs.current[first]?.focus();
+    }
   }
+
+  // Ошибка по самому списку тегов и по конкретному элементу (tag_ids.0)
+  // показывается рядом со списком; всё остальное — общим сообщением, иначе
+  // серверный отказ по неизвестному форме полю исчез бы с экрана.
+  const tagsError = Object.entries(errors).find(([path]) => fieldRoot(path) === 'tag_ids')?.[1];
+  // Ошибки динамических полей приходят как attributes.<код>.
+  const knownCodes = new Set(metaFields.map((meta) => meta.code));
+  const attributeErrors = Object.fromEntries(
+    Object.entries(errors)
+      .filter(([path]) => path.startsWith('attributes.'))
+      .map(([path, message]) => [path.slice('attributes.'.length), message] as const)
+      .filter(([code]) => knownCodes.has(code)),
+  );
+  // Атрибут, которого нет в справочнике этого клиента, показать у поля негде:
+  // такая ошибка должна попасть в общее сообщение, а не исчезнуть.
+  const isShown = (path: string): boolean =>
+    path.startsWith('attributes.')
+      ? knownCodes.has(path.slice('attributes.'.length))
+      : SHOWN_FIELDS.has(fieldRoot(path));
+  const otherErrors = Object.entries(errors).filter(([path]) => !isShown(path));
+  const hasShownErrors = Object.keys(errors).some(isShown);
 
   function toggleTag(id: number) {
     setTagIds((current) =>
@@ -96,11 +163,16 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
             </label>
             <input
               id={titleId}
+              ref={(element) => {
+                inputs.current.title = element;
+              }}
               value={title}
               maxLength={255}
               onChange={(event) => setTitle(event.target.value)}
               className={`${field} text-base font-semibold`}
+              {...invalidProps(titleId, errors.title)}
             />
+            <FieldError id={`${titleId}-error`} message={errors.title} />
           </div>
           <button
             type="button"
@@ -119,11 +191,16 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
             </label>
             <input
               id={dueId}
+              ref={(element) => {
+                inputs.current.due_at = element;
+              }}
               type="datetime-local"
               value={dueAt}
               onChange={(event) => setDueAt(event.target.value)}
               className={field}
+              {...invalidProps(dueId, errors.due_at)}
             />
+            <FieldError id={`${dueId}-error`} message={errors.due_at} />
           </div>
           <div className="space-y-1.5">
             <label
@@ -134,11 +211,15 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
             </label>
             <select
               id={categoryId}
+              ref={(element) => {
+                inputs.current.category_id = element;
+              }}
               value={category ?? ''}
               onChange={(event) =>
                 setCategory(event.target.value ? Number(event.target.value) : null)
               }
               className={field}
+              {...invalidProps(categoryId, errors.category_id)}
             >
               <option value="">Без категории</option>
               {categories.data?.map((item) => (
@@ -147,6 +228,7 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
                 </option>
               ))}
             </select>
+            <FieldError id={`${categoryId}-error`} message={errors.category_id} />
           </div>
         </div>
 
@@ -184,6 +266,7 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
               className="w-28 rounded-lg border border-dashed border-gray-300 bg-transparent px-2 py-1 text-xs outline-none focus:border-indigo-500 dark:border-gray-700"
             />
           </div>
+          <FieldError id="task-tags-error" message={tagsError} />
         </div>
 
         <div className="space-y-1.5">
@@ -195,16 +278,37 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
           </label>
           <input
             id={descriptionId}
+            ref={(element) => {
+              inputs.current.description = element;
+            }}
             value={description}
             maxLength={10_000}
             onChange={(event) => setDescription(event.target.value)}
             className={field}
+            {...invalidProps(descriptionId, errors.description)}
           />
+          <FieldError id={`${descriptionId}-error`} message={errors.description} />
         </div>
+
+        {metaFields.length > 0 && (
+          <div className="space-y-1.5">
+            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+              Дополнительные поля
+            </span>
+            <AttributeFields
+              fields={metaFields}
+              values={attributeValues}
+              errors={attributeErrors}
+              onChange={setAttribute}
+              idPrefix={`task-${task.id}-attr`}
+            />
+          </div>
+        )}
 
         <div className="space-y-1.5">
           <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Содержимое</span>
           <RichTextEditor value={content} onChange={setContent} />
+          <FieldError id="task-content-error" message={errors.content} />
         </div>
 
         <AiAssistant
@@ -214,9 +318,12 @@ export const TaskDialog = ({ task, userId, onClose }: Props) => {
         />
 
         {update.isError && (
-          <p role="alert" className="text-xs text-red-500">
-            {describeError(update.error)}
-          </p>
+          <div role="alert" className="space-y-1 text-xs text-red-500">
+            {otherErrors.map(([path, message]) => (
+              <p key={path}>{`${path}: ${message}`}</p>
+            ))}
+            {!hasShownErrors && otherErrors.length === 0 && <p>{describeError(update.error)}</p>}
+          </div>
         )}
 
         <div className="flex justify-end gap-2">

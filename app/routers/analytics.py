@@ -20,7 +20,12 @@ async def summary(
     project_id: int | None = Query(default=None, gt=0),
 ):
     now = datetime.now(UTC)
-    since = now - timedelta(days=days - 1)
+    # График группирует по календарным датам, поэтому и граница выборки — начало
+    # дня, а не «столько же времени назад»: иначе первый столбец диапазона
+    # молча терял всё, что произошло раньше текущего времени суток.
+    # День считается в UTC; пользовательский часовой пояс сервер пока не знает,
+    # и это должно быть видно из кода, а не подразумеваться.
+    since = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
     owned = Task.project_id.in_(select(Project.id).where(Project.owner_id == principal.user_id))
     scope = [owned] if project_id is None else [owned, Task.project_id == project_id]
 
@@ -52,22 +57,26 @@ async def summary(
     ).one()
     total, completed, overdue, due_soon = totals
 
-    # Одна выборка по дням вместо запроса на каждую дату.
+    # Одна выборка по дням вместо запроса на каждую дату. Дата берётся явно в
+    # UTC: приведение timestamptz к date использует настройку TimeZone сессии,
+    # и без указания зоны столбцы графика зависели бы от конфигурации СУБД.
+    created_day = cast(func.timezone("UTC", Task.created_at), Date)
+    completed_day = cast(func.timezone("UTC", Task.completed_at), Date)
     created_rows = dict(
         (
             await db.execute(
-                select(cast(Task.created_at, Date), func.count(Task.id))
+                select(created_day, func.count(Task.id))
                 .where(*scope, Task.created_at >= since)
-                .group_by(cast(Task.created_at, Date))
+                .group_by(created_day)
             )
         ).all()
     )
     completed_rows = dict(
         (
             await db.execute(
-                select(cast(Task.completed_at, Date), func.count(Task.id))
+                select(completed_day, func.count(Task.id))
                 .where(*scope, Task.completed_at.is_not(None), Task.completed_at >= since)
-                .group_by(cast(Task.completed_at, Date))
+                .group_by(completed_day)
             )
         ).all()
     )

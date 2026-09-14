@@ -3,15 +3,15 @@
 from sqlalchemy import select, text, update
 
 from app.config import get_settings
-from app.cookies import refresh_cookie_name
+from app.cookies import session_cookie_name
 from app.db import SessionLocal
 from app.models import OtpCode, User
 from app.otp import hash_code
 
-from .conftest import OTP_CODE, bearer, login, plant_otp, register
+from .conftest import OTP_CODE, login, plant_otp, register
 
 settings = get_settings()
-COOKIE = refresh_cookie_name(settings)
+COOKIE = session_cookie_name(settings)
 PASSWORD = "correct-horse-battery"
 
 
@@ -47,7 +47,8 @@ async def test_registration_completes_only_with_correct_code(client):
         json={"email": "otp-ok@example.com", "code": OTP_CODE, "purpose": "register"},
     )
     assert verified.status_code == 200
-    assert verified.json()["token_type"] == "Bearer"
+    # Ответ — сам пользователь, а сессия приходит cookie: токенов клиенту нет.
+    assert verified.json()["email"] == "otp-ok@example.com"
     assert client.cookies.get(COOKIE)
 
 
@@ -107,8 +108,8 @@ async def test_login_requires_code_even_with_correct_password(client):
 
     assert started.status_code == 202
     assert started.json()["purpose"] == "login"
-    # Пароль верный, но пока код не введён, доступа нет.
-    assert (await client.post("/api/v1/auth/refresh", json={"purpose": "api"})).status_code == 401
+    # Пароль верный, но пока код не введён, сессии нет.
+    assert (await client.get("/api/v1/projects")).status_code == 401
 
     await plant_otp("otp-login@example.com", "login")
     verified = await client.post(
@@ -116,9 +117,7 @@ async def test_login_requires_code_even_with_correct_password(client):
         json={"email": "otp-login@example.com", "code": OTP_CODE, "purpose": "login"},
     )
     assert verified.status_code == 200
-    assert (
-        await client.get("/api/v1/projects", headers=bearer(verified.json()["access_token"]))
-    ).status_code == 200
+    assert (await client.get("/api/v1/projects")).status_code == 200
 
 
 async def test_login_code_does_not_work_for_registration(client):
@@ -182,6 +181,6 @@ async def test_login_helper_round_trip(client):
     await register(client, "otp-cycle@example.com")
     await client.post("/api/v1/auth/logout")
 
-    token = await login(client, "otp-cycle@example.com")
+    await login(client, "otp-cycle@example.com")
 
-    assert (await client.get("/api/v1/projects", headers=bearer(token))).status_code == 200
+    assert (await client.get("/api/v1/projects")).status_code == 200

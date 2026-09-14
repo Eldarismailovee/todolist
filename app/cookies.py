@@ -1,26 +1,32 @@
-"""Refresh cookie. Устанавливается auth-сервисом только после успешной ротации.
+"""Cookie сессии и короткоживущая cookie перехода OAuth.
 
-Здесь же короткоживущая cookie, связывающая начатый OAuth-переход с браузером.
+Сессионная cookie покрывает весь `/api/v1`, а не только маршруты входа: ею
+авторизуются все запросы, включая SSE и выдачу картинок. Прежняя refresh-cookie
+с `Path=/api/v1/auth/` для этого не годилась — до остальных маршрутов она просто
+не доходила, и клиенту приходилось обменивать её на токен перед каждым запросом.
+
+Значение недоступно JavaScript (`HttpOnly`), не уходит по HTTP (`Secure`) и не
+отправляется в кросс-сайтовых запросах (`SameSite=Strict`).
 """
 
 from fastapi import Response
 
 from .config import Settings
 
-REFRESH_COOKIE = "__Secure-refresh_token"
+SESSION_COOKIE = "__Secure-todo_session"
 # Имя с префиксом __Secure- требует Secure и работает только по HTTPS.
-INSECURE_REFRESH_COOKIE = "refresh_token"
-REFRESH_PATH = "/api/v1/auth/"
+INSECURE_SESSION_COOKIE = "todo_session"
+SESSION_PATH = "/api/v1"
 
 # Префикс __Host- дополнительно запрещает установку cookie с соседнего
-# поддомена, но требует Path=/ — поэтому имя отличается от refresh cookie.
+# поддомена, но требует Path=/ — поэтому имя отличается от сессионной cookie.
 OAUTH_STATE_COOKIE = "__Host-oauth_state"
 INSECURE_OAUTH_STATE_COOKIE = "oauth_state"
 OAUTH_STATE_PATH = "/"
 
 
-def refresh_cookie_name(settings: Settings) -> str:
-    return REFRESH_COOKIE if settings.cookie_secure else INSECURE_REFRESH_COOKIE
+def session_cookie_name(settings: Settings) -> str:
+    return SESSION_COOKIE if settings.cookie_secure else INSECURE_SESSION_COOKIE
 
 
 def oauth_state_cookie_name(settings: Settings) -> str:
@@ -58,24 +64,29 @@ def clear_oauth_state_cookie(response: Response, settings: Settings) -> None:
     response.headers["Cache-Control"] = "no-store"
 
 
-def set_refresh_cookie(response: Response, settings: Settings, token: str) -> None:
+def set_session_cookie(response: Response, settings: Settings, token: str) -> None:
+    """Срок хранения в браузере — абсолютный срок сессии.
+
+    Предел простоя короче и проверяется на сервере: срок cookie не может быть
+    авторитетом, его выставляет и меняет клиент.
+    """
     response.set_cookie(
-        key=refresh_cookie_name(settings),
+        key=session_cookie_name(settings),
         value=token,
-        max_age=settings.token_ttl_seconds,
+        max_age=settings.session_absolute_ttl_seconds,
         httponly=True,
         secure=settings.cookie_secure,
         samesite="strict",
-        path=REFRESH_PATH,
+        path=SESSION_PATH,
     )
     response.headers["Cache-Control"] = "no-store"
 
 
-def clear_refresh_cookie(response: Response, settings: Settings) -> None:
+def clear_session_cookie(response: Response, settings: Settings) -> None:
     """Удаление выполняется с теми же именем и Path, что и установка."""
     response.delete_cookie(
-        refresh_cookie_name(settings),
-        path=REFRESH_PATH,
+        session_cookie_name(settings),
+        path=SESSION_PATH,
         httponly=True,
         secure=settings.cookie_secure,
         samesite="strict",

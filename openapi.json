@@ -113,49 +113,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AccessTokenResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/refresh": {
-      "post": {
-        "tags": [
-          "auth"
-        ],
-        "summary": "Refresh",
-        "description": "Один обмен refresh на новый access указанного назначения и новый refresh.",
-        "operationId": "refresh_api_v1_auth_refresh_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RefreshRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccessTokenResponse"
+                  "$ref": "#/components/schemas/CurrentUserResponse"
                 }
               }
             }
@@ -179,7 +137,7 @@
           "auth"
         ],
         "summary": "Logout",
-        "description": "Отзывает сессию и удаляет cookie. Ответ одинаков независимо от результата.",
+        "description": "Отзывает сессию и удаляет cookie. Ответ одинаков независимо от результата.\n\nОдинаковый ответ на известное и неизвестное значение обязателен: иначе\nвыходом можно было бы проверять чужие значения на существование.",
         "operationId": "logout_api_v1_auth_logout_post",
         "responses": {
           "204": {
@@ -328,11 +286,6 @@
         ],
         "summary": "List Projects",
         "operationId": "list_projects_api_v1_projects_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "limit",
@@ -391,11 +344,6 @@
         ],
         "summary": "Create Project",
         "operationId": "create_project_api_v1_projects_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -437,11 +385,6 @@
         ],
         "summary": "Get Project",
         "operationId": "get_project_api_v1_projects__project_id__get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "project_id",
@@ -482,11 +425,6 @@
         ],
         "summary": "Delete Project",
         "operationId": "delete_project_api_v1_projects__project_id__delete",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "project_id",
@@ -521,12 +459,8 @@
           "board"
         ],
         "summary": "List Columns",
+        "description": "Только чтение.\n\nРаньше здесь создавались колонки по умолчанию, и два параллельных запроса\nк пустой доске делали два набора. Набор создаётся при создании проекта,\nа старым проектам он добавлен миграцией.",
         "operationId": "list_columns_api_v1_board_columns_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "project_id",
@@ -572,11 +506,6 @@
         ],
         "summary": "Create Column",
         "operationId": "create_column_api_v1_board_columns_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -619,11 +548,6 @@
         "summary": "Update Column",
         "description": "Переименование и перемещение колонки между соседями.",
         "operationId": "update_column_api_v1_board_columns__column_id__patch",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "column_id",
@@ -675,11 +599,6 @@
         "summary": "Delete Column",
         "description": "Задачи не удаляются вместе с колонкой: column_id обнуляется (SET NULL).",
         "operationId": "delete_column_api_v1_board_columns__column_id__delete",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "column_id",
@@ -716,11 +635,6 @@
         "summary": "List Tasks",
         "description": "Список задач проекта с поиском и фильтрами.",
         "operationId": "list_tasks_api_v1_tasks_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "project_id",
@@ -913,11 +827,6 @@
         ],
         "summary": "Create Task",
         "operationId": "create_task_api_v1_tasks_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "Idempotency-Key",
@@ -978,11 +887,6 @@
         "summary": "Search Tasks",
         "description": "Поиск по всем проектам пользователя: заголовок, описание, содержимое.",
         "operationId": "search_tasks_api_v1_tasks_search_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "q",
@@ -1042,12 +946,8 @@
           "tasks"
         ],
         "summary": "Update Task",
+        "description": "Частичное обновление задачи.\n\n`If-Match` с номером версии из последнего прочитанного ответа делает запись\nусловной: правка, сделанная на устаревшем снимке, отвергается вместо того,\nчтобы молча затереть изменение из другой вкладки. Без заголовка проверки\nнет — старые клиенты продолжают работать как прежде.",
         "operationId": "update_task_api_v1_tasks__task_id__patch",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "task_id",
@@ -1056,6 +956,22 @@
             "schema": {
               "type": "integer",
               "title": "Task Id"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
             }
           }
         ],
@@ -1098,11 +1014,6 @@
         ],
         "summary": "Delete Task",
         "operationId": "delete_task_api_v1_tasks__task_id__delete",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "task_id",
@@ -1139,11 +1050,6 @@
         "summary": "Move Task",
         "description": "Перетаскивание: задача встаёт между указанными соседями.",
         "operationId": "move_task_api_v1_tasks__task_id__move_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "task_id",
@@ -1211,12 +1117,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       },
       "post": {
         "tags": [
@@ -1255,12 +1156,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/tags/{tag_id}": {
@@ -1270,11 +1166,6 @@
         ],
         "summary": "Delete Tag",
         "operationId": "delete_tag_api_v1_tags__tag_id__delete",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "tag_id",
@@ -1325,12 +1216,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       },
       "post": {
         "tags": [
@@ -1369,12 +1255,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/categories/{category_id}": {
@@ -1385,11 +1266,6 @@
         "summary": "Delete Category",
         "description": "Задачи сохраняются: внешний ключ обнуляется (ON DELETE SET NULL).",
         "operationId": "delete_category_api_v1_categories__category_id__delete",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "category_id",
@@ -1456,12 +1332,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/files/{attachment_id}": {
@@ -1470,13 +1341,8 @@
           "files"
         ],
         "summary": "Download File",
-        "description": "Доступ даёт либо подписанная ссылка, либо access token владельца.",
+        "description": "Файл отдаётся владельцу по сессионной cookie.\n\nТег `<img>` отправляет её сам: она HttpOnly и ограничена этим origin,\nпоэтому ссылка на картинку больше не является отдельным предъявительским\nдоступом с собственным сроком жизни.",
         "operationId": "download_file_api_v1_files__attachment_id__get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "attachment_id",
@@ -1486,26 +1352,6 @@
               "type": "string",
               "format": "uuid",
               "title": "Attachment Id"
-            }
-          },
-          {
-            "name": "exp",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "",
-              "title": "Exp"
-            }
-          },
-          {
-            "name": "sig",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "",
-              "title": "Sig"
             }
           }
         ],
@@ -1537,7 +1383,7 @@
           "ai"
         ],
         "summary": "Assist",
-        "description": "Обращение к модели платное, поэтому лимит считается по пользователю.",
+        "description": "Обращение к модели платное, поэтому лимит считается по пользователю.\n\nСессия проверяется короткой отдельной сессией БД: ожидание внешней\nмодели не должно удерживать SQL-соединение из пула.",
         "operationId": "assist_api_v1_ai_assist_post",
         "requestBody": {
           "content": {
@@ -1570,12 +1416,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/analytics/summary": {
@@ -1585,11 +1426,6 @@
         ],
         "summary": "Summary",
         "operationId": "summary_api_v1_analytics_summary_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "days",
@@ -1663,12 +1499,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       },
       "put": {
         "tags": [
@@ -1680,7 +1511,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NotificationPrefsSchema"
+                "$ref": "#/components/schemas/NotificationPrefsUpdate"
               }
             }
           },
@@ -1707,12 +1538,113 @@
               }
             }
           }
+        }
+      }
+    },
+    "/api/v1/notifications/telegram/link": {
+      "post": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Link Telegram",
+        "description": "Отправить код подтверждения в указанный чат.\n\nВведённое число само по себе ничего не доказывает: с ним можно было бы\nподписать чужой чат на свои уведомления. Прочитать код может только тот,\nу кого есть доступ к этому чату.",
+        "operationId": "link_telegram_api_v1_notifications_telegram_link_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelegramLinkRequest"
+              }
+            }
+          },
+          "required": true
         },
-        "security": [
-          {
-            "HTTPBearer": []
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramLinkChallenge"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
-        ]
+        }
+      }
+    },
+    "/api/v1/notifications/telegram/confirm": {
+      "post": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Confirm Telegram",
+        "description": "Подтвердить чат кодом и включить доставку в него.",
+        "operationId": "confirm_telegram_api_v1_notifications_telegram_confirm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelegramConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPrefsSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/telegram": {
+      "delete": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Unlink Telegram",
+        "description": "Отключить чат. Повторное подключение снова требует подтверждения.",
+        "operationId": "unlink_telegram_api_v1_notifications_telegram_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPrefsSchema"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/notifications/test": {
@@ -1727,12 +1659,7 @@
           "204": {
             "description": "Successful Response"
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/task-attributes": {
@@ -1757,12 +1684,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/admin/task-attributes": {
@@ -1803,12 +1725,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/admin/task-attributes/{code}": {
@@ -1819,11 +1736,6 @@
         "summary": "Update Attribute Meta",
         "description": "Изменение типа или обязательности допускается только для совместимых данных.",
         "operationId": "update_attribute_meta_api_v1_admin_task_attributes__code__patch",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "code",
@@ -1874,11 +1786,6 @@
         ],
         "summary": "Delete Attribute Meta",
         "operationId": "delete_attribute_meta_api_v1_admin_task_attributes__code__delete",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "code",
@@ -1926,19 +1833,14 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       },
       "delete": {
         "tags": [
           "user"
         ],
         "summary": "Delete Account",
-        "description": "Удаление аккаунта: подтверждение пароля, отзыв сессий, каскадное удаление.\n\nОбработку резервных копий и журналов нужно согласовать с политикой хранения:\nодин DELETE из `users` не реализует весь процесс.",
+        "description": "Удаление аккаунта: подтверждение личности, отзыв сессий, каскад.\n\nОбработку резервных копий и журналов нужно согласовать с политикой хранения:\nодин DELETE из `users` не реализует весь процесс.",
         "operationId": "delete_account_api_v1_user_me_delete",
         "requestBody": {
           "content": {
@@ -1964,12 +1866,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/user/export-data": {
@@ -1978,7 +1875,7 @@
           "user"
         ],
         "summary": "Export User Data",
-        "description": "Синхронный экспорт небольшого объёма.\n\nСвязь `Project.tasks` загружается явно через selectinload: при lazy=\"raise\"\nобращение к `p.tasks` иначе подняло бы исключение, а не скрытый SQL.\nХеши паролей и действующие токены в экспорт не попадают.",
+        "description": "Синхронный экспорт небольшого объёма.\n\nСвязи загружаются явно через selectinload: при lazy=\"raise\" обращение к\n`p.tasks` иначе подняло бы исключение, а не скрытый SQL. Хеши паролей и\nдействующие токены в экспорт не попадают.\n\nВыгрузка должна позволять восстановить список дел: раньше в неё попадали\nтолько id, атрибуты и отметки времени задачи, то есть ни заголовка, ни\nтекста, ни срока в ней не было. Ссылки на вложения не подписываются —\nподпись живёт час, а выгрузка хранится долго; вместо неё идёт перечень\nфайлов с постоянными идентификаторами.",
         "operationId": "export_user_data_api_v1_user_export_data_get",
         "responses": {
           "200": {
@@ -1989,12 +1886,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/user/change-password": {
@@ -2003,7 +1895,7 @@
           "user"
         ],
         "summary": "Change Password",
-        "description": "Смена пароля отзывает все сессии: оставшиеся access-токены и открытые\nSSE-потоки перестают давать доступ, требуется повторный вход.",
+        "description": "Смена пароля отзывает все сессии: cookie в других браузерах и открытые\nSSE-потоки перестают давать доступ, требуется повторный вход.",
         "operationId": "change_password_api_v1_user_change_password_post",
         "requestBody": {
           "content": {
@@ -2029,12 +1921,29 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
+        }
+      }
+    },
+    "/api/v1/user/delete-code": {
+      "post": {
+        "tags": [
+          "user"
+        ],
+        "summary": "Request Delete Code",
+        "description": "Код подтверждения удаления аккаунта на адрес владельца.\n\nНужен аккаунтам без пароля: у входа через OAuth подтверждать нечего, а\nудаление данных обязано требовать свежего подтверждения личности. Код\nпривязан к действию: цель `delete_account` не принимается на\n/auth/otp/verify и сессию не создаёт.",
+        "operationId": "request_delete_code_api_v1_user_delete_code_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteCodeChallengeResponse"
+                }
+              }
+            }
           }
-        ]
+        }
       }
     },
     "/api/v1/tasks/stream": {
@@ -2053,42 +1962,12 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     }
   },
   "components": {
     "schemas": {
-      "AccessTokenResponse": {
-        "properties": {
-          "access_token": {
-            "type": "string",
-            "title": "Access Token"
-          },
-          "expires_in": {
-            "type": "integer",
-            "title": "Expires In"
-          },
-          "token_type": {
-            "type": "string",
-            "const": "Bearer",
-            "title": "Token Type",
-            "default": "Bearer"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "access_token",
-          "expires_in"
-        ],
-        "title": "AccessTokenResponse"
-      },
       "AnalyticsCategorySlice": {
         "properties": {
           "name": {
@@ -2536,8 +2415,7 @@
           },
           "has_password": {
             "type": "boolean",
-            "title": "Has Password",
-            "default": true
+            "title": "Has Password"
           },
           "created_at": {
             "type": "string",
@@ -2550,6 +2428,7 @@
           "id",
           "email",
           "is_admin",
+          "has_password",
           "created_at"
         ],
         "title": "CurrentUserResponse"
@@ -2561,15 +2440,45 @@
             "maxLength": 512,
             "minLength": 1,
             "title": "Password"
+          },
+          "code": {
+            "type": "string",
+            "maxLength": 12,
+            "minLength": 4,
+            "title": "Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DeleteAccountRequest",
+        "description": "Повторное подтверждение личности для чувствительной операции.\n\nПароль есть не у всех: аккаунт, созданный через OAuth, иначе невозможно\nудалить вовсе. Для него подтверждением служит одноразовый код на\nподтверждённый адрес, запрошенный отдельно и привязанный к этому действию.\nПропускать проверку для OAuth-аккаунтов нельзя: удаление данных должно\nтребовать свежего подтверждения личности."
+      },
+      "DeleteCodeChallengeResponse": {
+        "properties": {
+          "otp_required": {
+            "type": "boolean",
+            "const": true,
+            "title": "Otp Required",
+            "default": true
+          },
+          "purpose": {
+            "type": "string",
+            "const": "delete_account",
+            "title": "Purpose",
+            "default": "delete_account"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "password"
+          "expires_in"
         ],
-        "title": "DeleteAccountRequest",
-        "description": "Повторное подтверждение личности для чувствительной операции."
+        "title": "DeleteCodeChallengeResponse",
+        "description": "Код подтверждения удаления аккаунта отправлен.\n\nОтдельный тип, а не расширение OtpChallengeResponse: цель этого кода не\nвходит в допустимые значения /auth/otp/verify, и контракт входа не должен\nобъявлять её как возможный ответ."
       },
       "HTTPValidationError": {
         "properties": {
@@ -2711,7 +2620,33 @@
         },
         "additionalProperties": false,
         "type": "object",
-        "title": "NotificationPrefsSchema"
+        "title": "NotificationPrefsSchema",
+        "description": "Ответ с настройками. `telegram_chat_id` задаёт сервер после подтверждения."
+      },
+      "NotificationPrefsUpdate": {
+        "properties": {
+          "email_enabled": {
+            "type": "boolean",
+            "title": "Email Enabled",
+            "default": true
+          },
+          "telegram_enabled": {
+            "type": "boolean",
+            "title": "Telegram Enabled",
+            "default": false
+          },
+          "lead_time_minutes": {
+            "type": "integer",
+            "maximum": 10080.0,
+            "minimum": 5.0,
+            "title": "Lead Time Minutes",
+            "default": 60
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NotificationPrefsUpdate",
+        "description": "Что клиент вправе менять сам.\n\n`telegram_chat_id` в тело не входит: чат подключается только через\nподтверждение кодом, иначе в настройки можно было бы записать чужой чат."
       },
       "OAuthProvidersResponse": {
         "properties": {
@@ -2857,25 +2792,6 @@
           "created_at"
         ],
         "title": "ProjectResponse"
-      },
-      "RefreshRequest": {
-        "properties": {
-          "purpose": {
-            "type": "string",
-            "enum": [
-              "api",
-              "sse"
-            ],
-            "title": "Purpose"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "purpose"
-        ],
-        "title": "RefreshRequest",
-        "description": "`user_id` клиент не передаёт: он берётся из серверной записи сессии."
       },
       "RegisterRequest": {
         "properties": {
@@ -3216,6 +3132,10 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
           }
         },
         "type": "object",
@@ -3232,23 +3152,17 @@
           "completed_at",
           "attributes",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "version"
         ],
         "title": "TaskResponse"
       },
       "TaskUpdate": {
         "properties": {
           "title": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 255,
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
             "title": "Title"
           },
           "description": {
@@ -3312,64 +3226,95 @@
             "title": "Category Id"
           },
           "tag_ids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0.0
-                },
-                "type": "array",
-                "maxItems": 32
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "items": {
+              "type": "integer",
+              "exclusiveMinimum": 0.0
+            },
+            "type": "array",
+            "maxItems": 32,
             "title": "Tag Ids"
           },
           "attributes": {
-            "anyOf": [
-              {
-                "patternProperties": {
-                  "^[a-z][a-z0-9_]{0,49}$": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+            "patternProperties": {
+              "^[a-z][a-z0-9_]{0,49}$": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
                   }
-                },
-                "type": "object",
-                "maxProperties": 64
-              },
-              {
-                "type": "null"
+                ]
               }
-            ],
+            },
+            "type": "object",
+            "maxProperties": 64,
             "title": "Attributes"
           },
           "completed": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "boolean",
             "title": "Completed"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "title": "TaskUpdate",
-        "description": "Частичное обновление: поле меняется, только если явно передано.\n\n`attributes` заменяются целиком — JSONB присваивается новым словарём."
+        "description": "Частичное обновление: поле меняется, только если явно передано.\n\n`attributes` заменяются целиком — JSONB присваивается новым словарём.\n\nNull принимается только там, где очистка значения осмысленна: описание,\nсодержимое, срок, колонка и категория. Для заголовка, тегов, атрибутов и\nпризнака выполнения null операцией не является — раньше он молча\nигнорировался, и клиент не мог отличить его от применённого изменения."
+      },
+      "TelegramConfirmRequest": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 12,
+            "minLength": 4,
+            "title": "Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "TelegramConfirmRequest"
+      },
+      "TelegramLinkChallenge": {
+        "properties": {
+          "code_sent": {
+            "type": "boolean",
+            "const": true,
+            "title": "Code Sent",
+            "default": true
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expires_in"
+        ],
+        "title": "TelegramLinkChallenge",
+        "description": "Код отправлен в указанный чат."
+      },
+      "TelegramLinkRequest": {
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "pattern": "^-?[0-9]{1,32}$",
+            "title": "Chat Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "chat_id"
+        ],
+        "title": "TelegramLinkRequest"
       },
       "ValidationError": {
         "properties": {
@@ -3410,12 +3355,6 @@
           "type"
         ],
         "title": "ValidationError"
-      }
-    },
-    "securitySchemes": {
-      "HTTPBearer": {
-        "type": "http",
-        "scheme": "bearer"
       }
     }
   }

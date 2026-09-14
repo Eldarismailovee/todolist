@@ -1,54 +1,53 @@
-"""Регистрация, вход, подтверждение кодом, ротация refresh и выход.
+"""Регистрация, вход, подтверждение кодом и выход.
 
 Пароль сам по себе сессию не создаёт: и вход, и регистрация завершаются только
-после подтверждения одноразовым кодом из письма.
+после подтверждения одноразовым кодом из письма. Успешное подтверждение
+устанавливает сессионную cookie; никакого токена клиент не получает.
 
-Login, refresh и logout защищены проверкой точного Origin и обязательного
-заголовка `X-CSRF-Guard: 1`. Маршруты OAuth вынесены в отдельный роутер: они
-открываются переходом по ссылке, где этих заголовков не бывает, и защищены
-параметром `state` вместе с cookie, связывающей его с начавшим вход браузером.
+Обмена refresh на access больше нет: он выполнялся перед каждым защищённым
+запросом, выстраивал параллельные запросы в очередь и создавал строку в БД на
+каждый из них.
+
+Все небезопасные методы `/api/v1` защищены проверкой точного Origin и
+обязательного заголовка `X-CSRF-Guard: 1` (см. main.py). Маршруты OAuth вынесены
+в отдельный роутер: они открываются переходом по ссылке, где этих заголовков не
+бывает, и защищены параметром `state` вместе с cookie, связывающей его с
+начавшим вход браузером.
 """
 
 import logging
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import audit, auth_service, oauth, otp
+from .. import audit, oauth, otp
 from ..config import Settings
 from ..cookies import (
     clear_oauth_state_cookie,
-    clear_refresh_cookie,
+    clear_session_cookie,
     oauth_state_cookie_name,
-    refresh_cookie_name,
+    session_cookie_name,
     set_oauth_state_cookie,
-    set_refresh_cookie,
+    set_session_cookie,
 )
 from ..dependencies import Db, MailerDep, RedisDep, SettingsDep
-from ..integrations.mail import Mailer
 from ..models import OAuthAccount, User
 from ..schemas import (
-    AccessTokenResponse,
+    CurrentUserResponse,
     LoginRequest,
     OAuthProvidersResponse,
     OtpChallengeResponse,
     OtpVerifyRequest,
-    RefreshRequest,
     RegisterRequest,
 )
-from ..security import (
-    client_ip,
-    enforce_rate_limit,
-    hash_password,
-    require_csrf_guard,
-    verify_password,
-)
+from ..security import client_ip, enforce_rate_limit, hash_password, verify_password
+from ..sessions import create_session, revoke_by_token
 
-router = APIRouter(prefix="/auth", tags=["auth"], dependencies=[Depends(require_csrf_guard)])
+router = APIRouter(prefix="/auth", tags=["auth"])
 oauth_router = APIRouter(prefix="/auth/oauth", tags=["auth"])
 
 logger = logging.getLogger(__name__)
@@ -58,45 +57,18 @@ PROVIDERS = ("google", "github")
 MAX_STATE_LENGTH = 128
 
 
-def _token_response(
-    response: Response, tokens: auth_service.IssuedTokens, settings: Settings
-) -> dict:
-    set_refresh_cookie(response, settings, tokens.refresh_token)
-    response.headers["Cache-Control"] = "no-store"
-    # Refresh token в теле ответа не передаётся.
-    return {
-        "access_token": tokens.access_token,
-        "expires_in": tokens.expires_in,
-        "token_type": "Bearer",
-    }
+async def _sign_in(response: Response, db: AsyncSession, settings: Settings, user: User) -> User:
+    """Завершает вход: новая сессия и cookie. Тело ответа — сам пользователь.
 
-
-async def _send_code(
-    db: AsyncSession,
-    settings: Settings,
-    mailer: Mailer,
-    redis,
-    email: str,
-    purpose: str,
-    password_hash: str | None = None,
-) -> None:
-    code = await otp.issue_code(db, settings, email, purpose, pending_password_hash=password_hash)
+    Никакого токена клиенту не выдаётся: значение сессии живёт только в
+    HttpOnly cookie, поэтому XSS не может его прочитать, а JavaScript —
+    отправить куда-либо, кроме своего origin.
+    """
+    raw, _ = await create_session(db, settings, user.id)
     await db.commit()
-    subject, body = otp.format_message(code, purpose, settings.otp_ttl_seconds)
-    await mailer.send(email, subject, body)
-    if settings.otp_log_codes:
-        # Только для локальной разработки: в production код в логах недопустим.
-        logger.warning("OTP для %s (%s): %s", email, purpose, code)
-    if settings.enable_testing_endpoints:
-        # Тот же выключатель, что и у служебного роутера: без него код нигде
-        # в открытом виде не сохраняется.
-        from .testing import testing_otp_key
-
-        await redis.set(
-            testing_otp_key(settings.key_prefix, email, purpose),
-            code,
-            ex=settings.otp_ttl_seconds,
-        )
+    set_session_cookie(response, settings, raw)
+    response.headers["Cache-Control"] = "no-store"
+    return user
 
 
 @router.post("/register", status_code=status.HTTP_202_ACCEPTED, response_model=OtpChallengeResponse)
@@ -132,7 +104,7 @@ async def register(
     if await db.scalar(select(User.id).where(User.email == email)):
         raise HTTPException(status.HTTP_409_CONFLICT, "Email уже зарегистрирован")
 
-    await _send_code(
+    await otp.send_code(
         db,
         settings,
         mailer,
@@ -186,11 +158,11 @@ async def login(
             status.HTTP_401_UNAUTHORIZED, "Неверный email или пароль", headers=NO_STORE
         )
 
-    await _send_code(db, settings, mailer, redis, email, "login")
+    await otp.send_code(db, settings, mailer, redis, email, "login")
     return {"otp_required": True, "purpose": "login", "expires_in": settings.otp_ttl_seconds}
 
 
-@router.post("/otp/verify", response_model=AccessTokenResponse)
+@router.post("/otp/verify", response_model=CurrentUserResponse)
 async def verify_otp(
     payload: OtpVerifyRequest,
     request: Request,
@@ -234,40 +206,19 @@ async def verify_otp(
             await db.commit()
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Сессия недействительна")
 
-    tokens = await auth_service.start_session(db, redis, settings, user)
-    return _token_response(response, tokens, settings)
-
-
-@router.post("/refresh", response_model=AccessTokenResponse)
-async def refresh(
-    payload: RefreshRequest,
-    request: Request,
-    response: Response,
-    db: Db,
-    redis: RedisDep,
-    settings: SettingsDep,
-):
-    """Один обмен refresh на новый access указанного назначения и новый refresh."""
-    await enforce_rate_limit(
-        redis,
-        settings,
-        f"refresh:ip:{client_ip(request)}",
-        settings.refresh_rate_limit,
-        settings.refresh_rate_window_seconds,
-    )
-    presented = request.cookies.get(refresh_cookie_name(settings))
-    if not presented:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Нет refresh cookie", headers=NO_STORE)
-    tokens = await auth_service.rotate_refresh(db, redis, settings, presented, payload.purpose)
-    return _token_response(response, tokens, settings)
+    return await _sign_in(response, db, settings, user)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(request: Request, response: Response, db: Db, settings: SettingsDep):
-    """Отзывает сессию и удаляет cookie. Ответ одинаков независимо от результата."""
-    presented = request.cookies.get(refresh_cookie_name(settings))
-    await auth_service.logout_by_refresh(db, presented)
-    clear_refresh_cookie(response, settings)
+    """Отзывает сессию и удаляет cookie. Ответ одинаков независимо от результата.
+
+    Одинаковый ответ на известное и неизвестное значение обязателен: иначе
+    выходом можно было бы проверять чужие значения на существование.
+    """
+    presented = request.cookies.get(session_cookie_name(settings))
+    await revoke_by_token(db, presented, "logout")
+    clear_session_cookie(response, settings)
 
 
 # --- OAuth ---------------------------------------------------------------
@@ -385,9 +336,10 @@ async def oauth_callback(
         await db.flush()
 
     audit.add_audit(db, audit.LOGIN_OK, user_id=user.id, detail=f"oauth:{provider}")
-    tokens = await auth_service.start_session(db, redis, settings, user)
+    raw, _ = await create_session(db, settings, user.id)
+    await db.commit()
 
     redirect = RedirectResponse(f"{spa}/projects", status_code=303)
-    set_refresh_cookie(redirect, settings, tokens.refresh_token)
+    set_session_cookie(redirect, settings, raw)
     clear_oauth_state_cookie(redirect, settings)
     return redirect

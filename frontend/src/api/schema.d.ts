@@ -64,26 +64,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/auth/refresh': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /**
-     * Refresh
-     * @description Один обмен refresh на новый access указанного назначения и новый refresh.
-     */
-    post: operations['refresh_api_v1_auth_refresh_post'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   '/api/v1/auth/logout': {
     parameters: {
       query?: never;
@@ -96,6 +76,9 @@ export interface paths {
     /**
      * Logout
      * @description Отзывает сессию и удаляет cookie. Ответ одинаков независимо от результата.
+     *
+     *     Одинаковый ответ на известное и неизвестное значение обязателен: иначе
+     *     выходом можно было бы проверять чужие значения на существование.
      */
     post: operations['logout_api_v1_auth_logout_post'];
     delete?: never;
@@ -204,7 +187,14 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** List Columns */
+    /**
+     * List Columns
+     * @description Только чтение.
+     *
+     *     Раньше здесь создавались колонки по умолчанию, и два параллельных запроса
+     *     к пустой доске делали два набора. Набор создаётся при создании проекта,
+     *     а старым проектам он добавлен миграцией.
+     */
     get: operations['list_columns_api_v1_board_columns_get'];
     put?: never;
     /** Create Column */
@@ -294,7 +284,15 @@ export interface paths {
     delete: operations['delete_task_api_v1_tasks__task_id__delete'];
     options?: never;
     head?: never;
-    /** Update Task */
+    /**
+     * Update Task
+     * @description Частичное обновление задачи.
+     *
+     *     `If-Match` с номером версии из последнего прочитанного ответа делает запись
+     *     условной: правка, сделанная на устаревшем снимке, отвергается вместо того,
+     *     чтобы молча затереть изменение из другой вкладки. Без заголовка проверки
+     *     нет — старые клиенты продолжают работать как прежде.
+     */
     patch: operations['update_task_api_v1_tasks__task_id__patch'];
     trace?: never;
   };
@@ -417,7 +415,11 @@ export interface paths {
     };
     /**
      * Download File
-     * @description Доступ даёт либо подписанная ссылка, либо access token владельца.
+     * @description Файл отдаётся владельцу по сессионной cookie.
+     *
+     *     Тег `<img>` отправляет её сам: она HttpOnly и ограничена этим origin,
+     *     поэтому ссылка на картинку больше не является отдельным предъявительским
+     *     доступом с собственным сроком жизни.
      */
     get: operations['download_file_api_v1_files__attachment_id__get'];
     put?: never;
@@ -440,6 +442,9 @@ export interface paths {
     /**
      * Assist
      * @description Обращение к модели платное, поэтому лимит считается по пользователю.
+     *
+     *     Сессия проверяется короткой отдельной сессией БД: ожидание внешней
+     *     модели не должно удерживать SQL-соединение из пула.
      */
     post: operations['assist_api_v1_ai_assist_post'];
     delete?: never;
@@ -478,6 +483,70 @@ export interface paths {
     put: operations['update_settings_api_v1_notifications_settings_put'];
     post?: never;
     delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications/telegram/link': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Link Telegram
+     * @description Отправить код подтверждения в указанный чат.
+     *
+     *     Введённое число само по себе ничего не доказывает: с ним можно было бы
+     *     подписать чужой чат на свои уведомления. Прочитать код может только тот,
+     *     у кого есть доступ к этому чату.
+     */
+    post: operations['link_telegram_api_v1_notifications_telegram_link_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications/telegram/confirm': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Confirm Telegram
+     * @description Подтвердить чат кодом и включить доставку в него.
+     */
+    post: operations['confirm_telegram_api_v1_notifications_telegram_confirm_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications/telegram': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /**
+     * Unlink Telegram
+     * @description Отключить чат. Повторное подключение снова требует подтверждения.
+     */
+    delete: operations['unlink_telegram_api_v1_notifications_telegram_delete'];
     options?: never;
     head?: never;
     patch?: never;
@@ -574,7 +643,7 @@ export interface paths {
     post?: never;
     /**
      * Delete Account
-     * @description Удаление аккаунта: подтверждение пароля, отзыв сессий, каскадное удаление.
+     * @description Удаление аккаунта: подтверждение личности, отзыв сессий, каскад.
      *
      *     Обработку резервных копий и журналов нужно согласовать с политикой хранения:
      *     один DELETE из `users` не реализует весь процесс.
@@ -596,9 +665,15 @@ export interface paths {
      * Export User Data
      * @description Синхронный экспорт небольшого объёма.
      *
-     *     Связь `Project.tasks` загружается явно через selectinload: при lazy="raise"
-     *     обращение к `p.tasks` иначе подняло бы исключение, а не скрытый SQL.
-     *     Хеши паролей и действующие токены в экспорт не попадают.
+     *     Связи загружаются явно через selectinload: при lazy="raise" обращение к
+     *     `p.tasks` иначе подняло бы исключение, а не скрытый SQL. Хеши паролей и
+     *     действующие токены в экспорт не попадают.
+     *
+     *     Выгрузка должна позволять восстановить список дел: раньше в неё попадали
+     *     только id, атрибуты и отметки времени задачи, то есть ни заголовка, ни
+     *     текста, ни срока в ней не было. Ссылки на вложения не подписываются —
+     *     подпись живёт час, а выгрузка хранится долго; вместо неё идёт перечень
+     *     файлов с постоянными идентификаторами.
      */
     get: operations['export_user_data_api_v1_user_export_data_get'];
     put?: never;
@@ -620,10 +695,35 @@ export interface paths {
     put?: never;
     /**
      * Change Password
-     * @description Смена пароля отзывает все сессии: оставшиеся access-токены и открытые
+     * @description Смена пароля отзывает все сессии: cookie в других браузерах и открытые
      *     SSE-потоки перестают давать доступ, требуется повторный вход.
      */
     post: operations['change_password_api_v1_user_change_password_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/user/delete-code': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Request Delete Code
+     * @description Код подтверждения удаления аккаунта на адрес владельца.
+     *
+     *     Нужен аккаунтам без пароля: у входа через OAuth подтверждать нечего, а
+     *     удаление данных обязано требовать свежего подтверждения личности. Код
+     *     привязан к действию: цель `delete_account` не принимается на
+     *     /auth/otp/verify и сессию не создаёт.
+     */
+    post: operations['request_delete_code_api_v1_user_delete_code_post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -651,19 +751,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
-    /** AccessTokenResponse */
-    AccessTokenResponse: {
-      /** Access Token */
-      access_token: string;
-      /** Expires In */
-      expires_in: number;
-      /**
-       * Token Type
-       * @default Bearer
-       * @constant
-       */
-      token_type: 'Bearer';
-    };
     /** AnalyticsCategorySlice */
     AnalyticsCategorySlice: {
       /** Name */
@@ -822,10 +909,7 @@ export interface components {
       display_name?: string | null;
       /** Avatar Url */
       avatar_url?: string | null;
-      /**
-       * Has Password
-       * @default true
-       */
+      /** Has Password */
       has_password: boolean;
       /**
        * Created At
@@ -836,10 +920,42 @@ export interface components {
     /**
      * DeleteAccountRequest
      * @description Повторное подтверждение личности для чувствительной операции.
+     *
+     *     Пароль есть не у всех: аккаунт, созданный через OAuth, иначе невозможно
+     *     удалить вовсе. Для него подтверждением служит одноразовый код на
+     *     подтверждённый адрес, запрошенный отдельно и привязанный к этому действию.
+     *     Пропускать проверку для OAuth-аккаунтов нельзя: удаление данных должно
+     *     требовать свежего подтверждения личности.
      */
     DeleteAccountRequest: {
       /** Password */
-      password: string;
+      password?: string;
+      /** Code */
+      code?: string;
+    };
+    /**
+     * DeleteCodeChallengeResponse
+     * @description Код подтверждения удаления аккаунта отправлен.
+     *
+     *     Отдельный тип, а не расширение OtpChallengeResponse: цель этого кода не
+     *     входит в допустимые значения /auth/otp/verify, и контракт входа не должен
+     *     объявлять её как возможный ответ.
+     */
+    DeleteCodeChallengeResponse: {
+      /**
+       * Otp Required
+       * @default true
+       * @constant
+       */
+      otp_required: true;
+      /**
+       * Purpose
+       * @default delete_account
+       * @constant
+       */
+      purpose: 'delete_account';
+      /** Expires In */
+      expires_in: number;
     };
     /** HTTPValidationError */
     HTTPValidationError: {
@@ -887,7 +1003,10 @@ export interface components {
       /** Title */
       title: string;
     };
-    /** NotificationPrefsSchema */
+    /**
+     * NotificationPrefsSchema
+     * @description Ответ с настройками. `telegram_chat_id` задаёт сервер после подтверждения.
+     */
     NotificationPrefsSchema: {
       /**
        * Email Enabled
@@ -901,6 +1020,30 @@ export interface components {
       telegram_enabled: boolean;
       /** Telegram Chat Id */
       telegram_chat_id?: string | null;
+      /**
+       * Lead Time Minutes
+       * @default 60
+       */
+      lead_time_minutes: number;
+    };
+    /**
+     * NotificationPrefsUpdate
+     * @description Что клиент вправе менять сам.
+     *
+     *     `telegram_chat_id` в тело не входит: чат подключается только через
+     *     подтверждение кодом, иначе в настройки можно было бы записать чужой чат.
+     */
+    NotificationPrefsUpdate: {
+      /**
+       * Email Enabled
+       * @default true
+       */
+      email_enabled: boolean;
+      /**
+       * Telegram Enabled
+       * @default false
+       */
+      telegram_enabled: boolean;
       /**
        * Lead Time Minutes
        * @default 60
@@ -966,17 +1109,6 @@ export interface components {
        * Format: date-time
        */
       created_at: string;
-    };
-    /**
-     * RefreshRequest
-     * @description `user_id` клиент не передаёт: он берётся из серверной записи сессии.
-     */
-    RefreshRequest: {
-      /**
-       * Purpose
-       * @enum {string}
-       */
-      purpose: 'api' | 'sse';
     };
     /** RegisterRequest */
     RegisterRequest: {
@@ -1084,16 +1216,23 @@ export interface components {
        * Format: date-time
        */
       updated_at: string;
+      /** Version */
+      version: number;
     };
     /**
      * TaskUpdate
      * @description Частичное обновление: поле меняется, только если явно передано.
      *
      *     `attributes` заменяются целиком — JSONB присваивается новым словарём.
+     *
+     *     Null принимается только там, где очистка значения осмысленна: описание,
+     *     содержимое, срок, колонка и категория. Для заголовка, тегов, атрибутов и
+     *     признака выполнения null операцией не является — раньше он молча
+     *     игнорировался, и клиент не мог отличить его от применённого изменения.
      */
     TaskUpdate: {
       /** Title */
-      title?: string | null;
+      title?: string;
       /** Description */
       description?: string | null;
       /** Content */
@@ -1107,13 +1246,37 @@ export interface components {
       /** Category Id */
       category_id?: number | null;
       /** Tag Ids */
-      tag_ids?: number[] | null;
+      tag_ids?: number[];
       /** Attributes */
       attributes?: {
         [key: string]: string | boolean | null;
-      } | null;
+      };
       /** Completed */
-      completed?: boolean | null;
+      completed?: boolean;
+    };
+    /** TelegramConfirmRequest */
+    TelegramConfirmRequest: {
+      /** Code */
+      code: string;
+    };
+    /**
+     * TelegramLinkChallenge
+     * @description Код отправлен в указанный чат.
+     */
+    TelegramLinkChallenge: {
+      /**
+       * Code Sent
+       * @default true
+       * @constant
+       */
+      code_sent: true;
+      /** Expires In */
+      expires_in: number;
+    };
+    /** TelegramLinkRequest */
+    TelegramLinkRequest: {
+      /** Chat Id */
+      chat_id: string;
     };
     /** ValidationError */
     ValidationError: {
@@ -1222,40 +1385,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          'application/json': components['schemas']['AccessTokenResponse'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  refresh_api_v1_auth_refresh_post: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['RefreshRequest'];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['AccessTokenResponse'];
+          'application/json': components['schemas']['CurrentUserResponse'];
         };
       };
       /** @description Validation Error */
@@ -1767,7 +1897,9 @@ export interface operations {
   update_task_api_v1_tasks__task_id__patch: {
     parameters: {
       query?: never;
-      header?: never;
+      header?: {
+        'If-Match'?: string | null;
+      };
       path: {
         task_id: number;
       };
@@ -2033,10 +2165,7 @@ export interface operations {
   };
   download_file_api_v1_files__attachment_id__get: {
     parameters: {
-      query?: {
-        exp?: string;
-        sig?: string;
-      };
+      query?: never;
       header?: never;
       path: {
         attachment_id: string;
@@ -2159,7 +2288,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['NotificationPrefsSchema'];
+        'application/json': components['schemas']['NotificationPrefsUpdate'];
       };
     };
     responses: {
@@ -2179,6 +2308,92 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  link_telegram_api_v1_notifications_telegram_link_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TelegramLinkRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TelegramLinkChallenge'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  confirm_telegram_api_v1_notifications_telegram_confirm_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TelegramConfirmRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['NotificationPrefsSchema'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  unlink_telegram_api_v1_notifications_telegram_delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['NotificationPrefsSchema'];
         };
       };
     };
@@ -2416,6 +2631,26 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  request_delete_code_api_v1_user_delete_code_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['DeleteCodeChallengeResponse'];
         };
       };
     };

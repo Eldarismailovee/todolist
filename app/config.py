@@ -12,6 +12,10 @@ Environment = Literal["development", "test", "production"]
 DEFAULT_SECRET_KEY = "dev-only-insecure-secret-change-me"
 MIN_SECRET_KEY_LENGTH = 32
 
+# Запас общего лимита тела над суммой полевых лимитов JSON: заголовок,
+# описание, идентификаторы и экранирование не-ASCII символов.
+JSON_BODY_RESERVE_BYTES = 256 * 1024
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -40,9 +44,21 @@ class Settings(BaseSettings):
     # SPA и API обслуживаются с одного HTTPS origin; точное совпадение.
     allowed_origin: str = Field(default="http://localhost:5173")
 
-    # --- Токены и сессии -------------------------------------------------
-    token_ttl_seconds: int = 300
-    session_absolute_ttl_seconds: int = 12 * 3600
+    # --- Сессии ------------------------------------------------------------
+    # Сроки разделены по назначению: одно значение на все credentials создавало
+    # видимость правила «всё живёт пять минут», которого на деле не было —
+    # OTP, state и ссылки на файлы всегда жили дольше. Границы заданы явно,
+    # чтобы окружение не могло тихо превратить короткий срок в долгий.
+    #
+    # Сессия ограничена двумя сроками: абсолютным (активность его не продлевает)
+    # и пределом простоя. Второй продлевается не чаще touch-интервала, иначе
+    # каждое чтение сессии было бы записью.
+    session_absolute_ttl_seconds: int = Field(default=12 * 3600, ge=300, le=30 * 24 * 3600)
+    session_idle_ttl_seconds: int = Field(default=3600, ge=300, le=30 * 24 * 3600)
+    session_touch_interval_seconds: int = Field(default=60, ge=1, le=3600)
+    # Сколько держать запись после того, как сессия перестала кого-либо пускать.
+    session_retention_seconds: int = Field(default=7 * 24 * 3600, ge=3600, le=90 * 24 * 3600)
+    session_cleanup_interval_seconds: int = Field(default=3600, ge=60, le=24 * 3600)
     sse_stream_seconds: int = 240
     sse_revocation_check_seconds: int = 5
 
@@ -55,8 +71,6 @@ class Settings(BaseSettings):
     # --- Rate limit (фиксированное окно) ---------------------------------
     login_rate_limit: int = 10
     login_rate_window_seconds: int = 300
-    refresh_rate_limit: int = 240
-    refresh_rate_window_seconds: int = 60
 
     # Ключ для HMAC коротких значений (OTP). Шестизначный код слишком мал для
     # обычного хеша: без секрета его подобрали бы по утёкшей базе за секунды.
@@ -66,7 +80,8 @@ class Settings(BaseSettings):
 
     # --- Одноразовые коды (OTP) ------------------------------------------
     otp_length: int = 6
-    otp_ttl_seconds: int = 600
+    # Код вводит человек из письма: минуты, а не секунды, но и не часы.
+    otp_ttl_seconds: int = Field(default=600, ge=60, le=1800)
     otp_max_attempts: int = 5
     # Запросов кода на один адрес за окно: иначе почтой можно завалить чужой ящик.
     otp_request_limit: int = 5
@@ -94,7 +109,7 @@ class Settings(BaseSettings):
     github_emails_url: str = "https://api.github.com/user/emails"
     # Время на один переход к провайдеру и обратно. Тот же срок живёт cookie,
     # связывающая state с браузером, поэтому запас держится небольшим.
-    oauth_state_ttl_seconds: int = 300
+    oauth_state_ttl_seconds: int = Field(default=300, ge=60, le=900)
 
     # --- Почта -----------------------------------------------------------
     # Без smtp_host письма пишутся в лог: локальная разработка не требует
@@ -127,6 +142,10 @@ class Settings(BaseSettings):
     # --- Загрузка файлов -------------------------------------------------
     upload_dir: str = "var/uploads"
     max_upload_bytes: int = 5 * 1024 * 1024
+    # Границы, заголовки частей и имя файла идут в теле поверх самого файла.
+    # Общий лимит тела считает их вместе с содержимым, поэтому запас нужен
+    # явный: без него файл ровно на max_upload_bytes не пролезал бы.
+    multipart_overhead_bytes: int = 64 * 1024
     allowed_upload_types: tuple[str, ...] = (
         "image/png",
         "image/jpeg",
@@ -143,7 +162,13 @@ class Settings(BaseSettings):
     max_attributes: int = 64
     max_attribute_string_length: int = 2_000
     max_attributes_bytes: int = 65_536
-    max_request_body_bytes: int = 128 * 1024
+    # Грубый потолок против чтения бесконечного потока — не подмена точных
+    # проверок полей. Он обязан быть больше суммы полевых лимитов, иначе
+    # заявленный размер содержимого недостижим: запрос отвергается на
+    # middleware ещё до валидации и пользователь получает 413 вместо 422.
+    # Запас в JSON_BODY_RESERVE_BYTES покрывает остальные поля и \uXXXX-
+    # экранирование, которым клиент вправе передать кириллицу.
+    max_request_body_bytes: int = 2 * 1024 * 1024
     max_content_bytes: int = 512 * 1024
     export_max_tasks: int = 5_000
     idempotency_ttl_seconds: int = 24 * 3600
@@ -158,6 +183,39 @@ class Settings(BaseSettings):
     @property
     def uses_default_secret_key(self) -> bool:
         return self.secret_key.get_secret_value() == DEFAULT_SECRET_KEY
+
+    @property
+    def max_upload_body_bytes(self) -> int:
+        """Лимит тела для загрузки файла: сам файл плюс обвязка multipart."""
+        return self.max_upload_bytes + self.multipart_overhead_bytes
+
+    @model_validator(mode="after")
+    def _check_session_retention(self) -> "Settings":
+        """Уборка не должна опережать конец жизни самой сессии."""
+        if self.session_retention_seconds < self.session_absolute_ttl_seconds:
+            raise ValueError(
+                f"SESSION_RETENTION_SECONDS={self.session_retention_seconds} меньше срока "
+                f"сессии ({self.session_absolute_ttl_seconds}): запись исчезала бы раньше, "
+                "чем сессия перестанет действовать"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_body_limits(self) -> "Settings":
+        """Обещанные лимиты полей должны быть достижимы через общий лимит тела.
+
+        Несогласованность здесь не видна в коде: маршрут объявляет 5 МиБ,
+        middleware молча отвергает запрос раньше. Поэтому конфигурация, в
+        которой полевой лимит недостижим, не должна подниматься.
+        """
+        required = self.max_content_bytes + self.max_attributes_bytes + JSON_BODY_RESERVE_BYTES
+        if self.max_request_body_bytes < required:
+            raise ValueError(
+                f"MAX_REQUEST_BODY_BYTES={self.max_request_body_bytes} меньше {required}: "
+                f"содержимое ({self.max_content_bytes}) и атрибуты "
+                f"({self.max_attributes_bytes}) не пройдут общий лимит тела"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_production_safety(self) -> "Settings":

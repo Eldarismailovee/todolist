@@ -1,11 +1,13 @@
 """Точка входа FastAPI. Все маршруты монтируются с общим префиксом /api/v1."""
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm.exc import StaleDataError
 
 from .config import get_settings
 from .db import engine
@@ -29,6 +31,7 @@ from .routers import (
     taxonomy,
     user,
 )
+from .security import require_csrf_guard
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -37,7 +40,7 @@ settings = get_settings()
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Клиенты внешних сервисов создаются при старте и закрываются при остановке."""
     logger.info("Среда: %s", settings.environment)
     if settings.uses_default_secret_key:
@@ -52,8 +55,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await app.state.redis.aclose()
+        # Клиент модели держит собственный пул HTTP-соединений.
+        await app.state.assistant.aclose()
         await engine.dispose()
 
+
+API_PREFIX = "/api/v1"
 
 app = FastAPI(
     title="Todo App",
@@ -63,7 +70,12 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
-app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_request_body_bytes)
+app.add_middleware(
+    MaxBodySizeMiddleware,
+    max_bytes=settings.max_request_body_bytes,
+    upload_max_bytes=settings.max_upload_body_bytes,
+    upload_path=f"{API_PREFIX}{files.router.prefix}",
+)
 app.add_middleware(
     CORSMiddleware,
     # При credentialed CORS "*" запрещён: разрешён ровно один origin.
@@ -74,7 +86,9 @@ app.add_middleware(
     max_age=600,
 )
 
-api = APIRouter(prefix="/api/v1")
+# CSRF-проверка висит на всём префиксе: запросы авторизуются cookie, и
+# небезопасным является каждый мутирующий маршрут, а не только вход.
+api = APIRouter(prefix=API_PREFIX, dependencies=[Depends(require_csrf_guard)])
 api.include_router(auth.router)
 api.include_router(auth.oauth_router)
 api.include_router(projects.router)
@@ -98,6 +112,20 @@ if settings.enable_testing_endpoints:
     api.include_router(testing.router)
 
 app.include_router(api)
+
+
+@app.exception_handler(StaleDataError)
+async def handle_stale_data(request: Request, exc: StaleDataError) -> JSONResponse:
+    """Условная запись не нашла строку ожидаемой версии.
+
+    Значит, между чтением и записью её изменил другой запрос. Это конфликт
+    состояния, а не сбой сервера: клиент должен перечитать задачу и повторить.
+    """
+    logger.info("Конфликт версий при записи: %s", exc)
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": "Задача изменена другим запросом, обновите её и повторите"},
+    )
 
 
 @app.get("/healthz", include_in_schema=False)

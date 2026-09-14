@@ -1,6 +1,6 @@
 import { EventSourceParserStream } from 'eventsource-parser/stream';
 
-import { AuthenticationRequired, freshAccess, streamHttp } from './http';
+import { AuthenticationRequired, streamHttp } from './http';
 
 type EventHandler = (event: string, data: string) => void;
 
@@ -8,11 +8,12 @@ type EventHandler = (event: string, data: string) => void;
 const WATCHDOG_MS = 45_000;
 
 /**
- * Один SSE-сеанс. Нативный EventSource не используется: ему нельзя передать
- * заголовок Authorization, а токен в query string авторизацией не является.
+ * Один SSE-сеанс. Поток авторизуется той же сессионной cookie, что и обычные
+ * запросы: отдельный одноразовый токен и обмен перед подключением больше не
+ * нужны. Нативный EventSource всё равно не используется — ему нельзя задать
+ * таймаут чтения и разобрать ошибку ответа.
  */
 export async function openTaskStream(signal: AbortSignal, onEvent: EventHandler): Promise<void> {
-  const token = await freshAccess('sse');
   if (signal.aborted) return;
 
   // Watchdog прекращает зависшее чтение даже при потере связи без EOF.
@@ -31,7 +32,7 @@ export async function openTaskStream(signal: AbortSignal, onEvent: EventHandler)
     const response = await streamHttp.get<ReadableStream<BufferSource>>('/tasks/stream', {
       responseType: 'stream',
       signal: watchdog.signal,
-      headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
+      headers: { Accept: 'text/event-stream' },
     });
 
     if (!String(response.headers['content-type']).includes('text/event-stream')) {

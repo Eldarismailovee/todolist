@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { fetchCurrentUser } from '../api/queries';
 import * as http from '../lib/http';
+import { AuthenticationRequired } from '../lib/http';
 import { useAuthStore } from '../stores/authStore';
 import { AuthContext, type PendingOtp } from './context';
 
@@ -13,6 +14,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const setUser = useAuthStore((state) => state.setUser);
   const clear = useAuthStore((state) => state.clear);
   const [expired, setExpired] = useState(false);
+  const [logoutUnconfirmed, setLogoutUnconfirmed] = useState(false);
   const channelRef = useRef<BroadcastChannel | null>(null);
 
   /** Локальная зачистка: отменяет запросы и очищает кэш TanStack Query. */
@@ -39,16 +41,19 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     };
   }, [teardown]);
 
-  // Восстановление сессии при загрузке: cookie может пережить перезагрузку,
-  // и возврат из OAuth приходит именно так.
+  // Восстановление сессии при загрузке: cookie переживает перезагрузку, и
+  // возврат из OAuth приходит именно так.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const user = await fetchCurrentUser();
         if (!cancelled) setUser(user);
-      } catch {
-        if (!cancelled) clear();
+      } catch (error) {
+        // Анонимным пользователя делает только явный 401. Недоступный сервер
+        // означает «неизвестно», и стирать при этом состояние нельзя: экран
+        // входа выглядел бы как завершённая сессия.
+        if (!cancelled && error instanceof AuthenticationRequired) clear();
       }
     })();
     return () => {
@@ -68,26 +73,33 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const confirmOtp = useCallback(
     async (pending: PendingOtp, code: string) => {
-      await http.verifyOtp(pending.email, code, pending.purpose);
-      const user = await fetchCurrentUser();
+      // Пользователь приходит тем же ответом, что и сессия: отдельный запрос
+      // /me после входа больше не нужен.
+      const user = await http.verifyOtp(pending.email, code, pending.purpose);
       queryClient.clear();
       setUser(user);
       setExpired(false);
+      setLogoutUnconfirmed(false);
     },
     [queryClient, setUser],
   );
 
   const signOut = useCallback(async () => {
-    // Сначала прекращаем фоновую активность: SSE и запросы не должны
-    // пытаться обновить токен уже отозванной сессии.
+    // Сначала прекращаем фоновую активность: запросы не должны идти от имени
+    // сессии, которую мы сейчас отзываем.
     void queryClient.cancelQueries();
+    let confirmed = true;
     try {
       await http.logout();
-    } catch {
-      // Cookie всё равно недействительна для нас — состояние чистим локально.
+    } catch (error) {
+      // 401 означает, что сессии и так нет — выход состоялся. Любой другой
+      // отказ оставляет результат неизвестным: cookie могла уцелеть, и об
+      // этом нужно сказать, а не делать вид, что выход прошёл.
+      confirmed = error instanceof AuthenticationRequired;
     }
     teardown();
     setExpired(false);
+    setLogoutUnconfirmed(!confirmed);
     channelRef.current?.postMessage({ type: 'signed-out' });
   }, [queryClient, teardown]);
 
@@ -95,6 +107,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const requireAuthentication = useCallback(() => {
     teardown();
     setExpired(true);
+    setLogoutUnconfirmed(false);
   }, [teardown]);
 
   return (
@@ -106,6 +119,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         signOut,
         requireAuthentication,
         expired,
+        logoutUnconfirmed,
       }}
     >
       {children}

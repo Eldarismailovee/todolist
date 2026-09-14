@@ -17,6 +17,11 @@ export interface AuthContextValue {
   /** Сессия закончилась не по инициативе пользователя (401, auth_revoked). */
   requireAuthentication: () => void;
   expired: boolean;
+  /**
+   * Выход не подтверждён сервером: ответа не было, поэтому неизвестно, отозвана
+   * ли сессия. Локально состояние очищено, но cookie могла остаться живой.
+   */
+  logoutUnconfirmed: boolean;
 }
 
 export const AuthContext = createContext<AuthContextValue | null>(null);

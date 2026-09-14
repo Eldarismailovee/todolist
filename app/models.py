@@ -43,6 +43,12 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    @property
+    def has_password(self) -> bool:
+        """Свойства не было, и CurrentUserResponse брал значение по умолчанию:
+        аккаунт без пароля сериализовался как has_password=true."""
+        return self.hashed_password is not None
+
 
 class OAuthAccount(Base):
     """Связь внешнего аккаунта с локальным пользователем."""
@@ -236,10 +242,18 @@ class Task(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+    # Номер версии для условной записи. updated_at для этого не годится:
+    # он выставляется СУБД, у него разрешение времени и он не отличает две
+    # правки внутри одной миллисекунды.
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
 
     project: Mapped["Project"] = relationship(back_populates="tasks", lazy="raise")
     column: Mapped["BoardColumn"] = relationship(back_populates="tasks", lazy="raise")
     tags: Mapped[list["Tag"]] = relationship(secondary="task_tags", lazy="raise")
+
+    # SQLAlchemy сам увеличивает version и добавляет его в WHERE каждого UPDATE:
+    # запись по устаревшему снимку не находит строку и поднимает StaleDataError.
+    __mapper_args__ = {"version_id_col": version}
 
 
 Index("idx_tasks_attributes_gin", Task.attributes, postgresql_using="gin")
@@ -299,7 +313,12 @@ class TaskNotification(Base):
 
 
 class AuthSession(Base):
-    """Семейство refresh-токенов одного входа. Авторитетное состояние отзыва."""
+    """Сессия одного входа. Авторитетное состояние доступа и отзыва.
+
+    Клиент предъявляет её значением cookie; в базе лежит только SHA-256, как и
+    у любого другого секрета. Отдельной таблицы refresh-токенов больше нет:
+    ротации на каждый запрос нет, и гасить нечего.
+    """
 
     __tablename__ = "auth_sessions"
 
@@ -307,33 +326,23 @@ class AuthSession(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # Значение cookie в базе не хранится: по утёкшему дампу сессию не угнать.
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    # Абсолютный предел жизни сессии: автоматические SSE-переподключения
-    # продлевают refresh, но не саму сессию.
+    # Абсолютный предел жизни сессии: активность его не продлевает.
     absolute_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Предел простоя: продлевается при обращениях, но не чаще, чем раз в
+    # session_touch_interval_seconds — иначе каждый запрос был бы записью.
+    idle_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
     last_used_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
-
-
-class RefreshToken(Base):
-    """Хранится только SHA-256 значения токена; сырой токен на сервере не остаётся."""
-
-    __tablename__ = "refresh_tokens"
-
-    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
-    session_id: Mapped[UUID] = mapped_column(
-        ForeignKey("auth_sessions.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    issued_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AuditEvent(Base):

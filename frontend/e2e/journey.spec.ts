@@ -191,14 +191,21 @@ test('настройки уведомлений сохраняются', async (
   await page.getByRole('link', { name: 'Уведомления' }).click();
   await page.waitForURL(/\/projects\/settings/);
 
-  await page.getByLabel('Присылать в Telegram').check();
-  await page.getByLabel('Telegram chat ID').fill('123456789');
+  // Чат не подтверждён, поэтому доставка в Telegram включаться не должна:
+  // введённый номер владения чатом не доказывает.
+  await expect(page.getByLabel('Присылать в Telegram')).toBeDisabled();
+
   await page.getByLabel('Предупреждать заранее, минут').fill('120');
   await page.getByRole('button', { name: 'Сохранить' }).click();
-
   await expect(page.getByText('Сохранено')).toBeVisible();
+
   await page.reload();
-  await expect(page.getByLabel('Telegram chat ID')).toHaveValue('123456789');
+  await expect(page.getByLabel('Предупреждать заранее, минут')).toHaveValue('120');
+
+  // Код уходит в указанный чат; прочитать его тест не может, как и посторонний.
+  await page.getByLabel('Telegram chat ID').fill('123456789');
+  await page.getByRole('button', { name: 'Прислать код' }).click();
+  await expect(page.getByLabel('Код из чата')).toBeVisible();
 });
 
 test('выход завершает сессию во всех вкладках', async ({ page, context }) => {

@@ -12,6 +12,7 @@ import logging
 import signal
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from html import escape
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -22,6 +23,7 @@ from .integrations.mail import Mailer, create_mailer
 from .integrations.telegram import TelegramSender, create_telegram_sender
 from .logging_config import configure_logging
 from .models import NotificationPrefs, Project, Task, TaskNotification, User
+from .sessions import purge_expired_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +80,10 @@ async def _deliver(mailer: Mailer, telegram: TelegramSender, reminder: _Reminder
             logger.warning("Письмо о задаче %s не отправлено: %s", reminder.task_id, error)
 
     if reminder.chat_id:
-        message = f"<b>{reminder.subject}</b>\n{reminder.body}"
+        # Заголовок задачи пишет пользователь, а сообщение уходит с
+        # parse_mode=HTML: без экранирования «<» ломает разметку, и Telegram
+        # отвергает сообщение целиком.
+        message = f"<b>{escape(reminder.subject)}</b>\n{escape(reminder.body)}"
         if await telegram.send(reminder.chat_id, message):
             channels.append("telegram")
 
@@ -196,6 +201,8 @@ async def main() -> None:
     configure_logging()
     settings = get_settings()
     stopping = asyncio.Event()
+    # Уборка идёт в том же процессе, но реже рассылки: она не срочная.
+    next_cleanup = 0.0
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -210,6 +217,20 @@ async def main() -> None:
                     logger.info("Отправлено напоминаний: %s", sent)
             except Exception:  # noqa: BLE001 — цикл переживает единичный сбой
                 logger.exception("Проход воркера завершился ошибкой")
+
+            if asyncio.get_running_loop().time() >= next_cleanup:
+                next_cleanup = (
+                    asyncio.get_running_loop().time() + settings.session_cleanup_interval_seconds
+                )
+                try:
+                    removed = await purge_expired_sessions(settings)
+                    # Число в журнале — единственная метрика роста таблицы,
+                    # которая здесь есть: постоянно большое значение означает,
+                    # что срок хранения или частота входов выбраны неверно.
+                    logger.info("Удалено истёкших сессий: %s", removed)
+                except Exception:  # noqa: BLE001 — уборка не должна ронять рассылку
+                    logger.exception("Уборка сессий завершилась ошибкой")
+
             try:
                 await asyncio.wait_for(stopping.wait(), timeout=settings.notification_poll_seconds)
             except TimeoutError:

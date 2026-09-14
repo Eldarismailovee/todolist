@@ -54,6 +54,10 @@ def needs_rehash(hashed: str) -> bool:
 # --- CSRF ----------------------------------------------------------------
 
 
+# Методы, не меняющие состояние: их защищает SameSite=Strict у самой cookie.
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
 async def require_csrf_guard(
     request: Request, settings: Annotated[Settings, Depends(get_settings)]
 ) -> None:
@@ -61,7 +65,14 @@ async def require_csrf_guard(
 
     Заголовок `X-CSRF-Guard` браузер не отправит в simple-запросе с другого
     origin без preflight, а preflight не пройдёт проверку CORS.
+
+    Проверка висит на всём `/api/v1`, а не на отдельных маршрутах: запросы
+    авторизуются cookie, которую браузер прикладывает сам, поэтому CSRF
+    касается каждой небезопасной операции, а не только входа. Безопасные методы
+    пропускаются — иначе перестали бы работать переходы по ссылкам и `<img>`.
     """
+    if request.method in SAFE_METHODS:
+        return
     origin = request.headers.get("origin")
     if origin != settings.allowed_origin:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Origin не разрешён")
